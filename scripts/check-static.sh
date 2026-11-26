@@ -10,7 +10,7 @@ fi
 
 FILE_OUT="$(file "$BIN")"
 echo "file: $FILE_OUT"
-if [[ "$FILE_OUT" != *"statically linked"* ]]; then
+if [[ "$FILE_OUT" != *"statically linked"* && "$FILE_OUT" != *"static-pie linked"* ]]; then
   echo "ERROR: binary is not statically linked" >&2
   exit 1
 fi
