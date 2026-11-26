@@ -5,8 +5,8 @@
 <h1 align="center">Latch</h1>
 
 <p align="center">
-  <strong>Autonomous Rust Agent Runtime</strong> — orkestrator <em>AI coding agent</em> berbasis 100% Rust dalam satu <em>static binary</em>.<br/>
-  Hemat RAM, terisolasi per <code>git worktree</code>, terukur, dan dikendalikan langsung dari CLI maupun TUI.
+  <strong>Autonomous Rust Agent Runtime</strong> — a 100% Rust AI coding agent orchestrator packed into a single static binary.<br/>
+  Low memory footprint, isolated <code>git worktree</code> per task, and controllable via CLI or TUI.
 </p>
 
 <p align="center">
@@ -18,90 +18,100 @@
 
 ---
 
-## Kenapa Latch?
+## Why Latch?
 
-Menjalankan banyak CLI agen AI (`claude`, `codex`, `opencode`, `gemini`, atau skrip kustom) secara bersamaan sering memunculkan masalah:
+Running multiple AI coding agent CLIs (`claude`, `codex`, `opencode`, `gemini`, or custom scripts) in parallel usually leads to three recurring problems:
 
-1. **Boros RAM** — orkestrator berbasis Electron/Chromium menyedot ratusan MB hingga GB saat banyak sesi aktif.
-2. **Konflik kerja** — agen yang bekerja di direktori yang sama saling menimpa perubahan.
-3. **Sulit dipantau** — berpindah-pindah tab terminal untuk memeriksa status, diff, dan merge tidak efisien.
+1. **Heavy RAM usage** — Electron/Chromium-based orchestrators consume hundreds of MB to several GB as sessions grow.
+2. **Workspace conflicts** — agents editing the same working directory overwrite each other's changes.
+3. **Fragmented control** — juggling terminal tabs to monitor output, inspect diffs, and merge work slows you down.
 
-**Latch** menyatukan **daemon**, **CLI**, dan **TUI** dalam **satu executable Rust (`latch` / `latchd`)** tanpa dependensi runtime eksternal (tanpa Node.js, Electron, atau Docker).
+**Latch** bundles the **daemon**, **CLI**, and **TUI** into a **single Rust executable (`latch` / `latchd`)** with zero external runtime dependencies (no Node.js, Electron, or Docker).
 
 ---
 
-## Fitur (`v0.1`)
+## Features (`v0.1`)
 
-- **Single Binary (`latch` & alias `latchd`)** — mode daemon, klien CLI, dan dashboard TUI dalam satu binary.
-- **Persistent State (SQLite WAL)** — `rusqlite` (`bundled`), aktor penulis tunggal, migrasi otomatis, dan rekonsiliasi startup setelah crash.
-- **Isolasi `git worktree` Otomatis** — tiap sesi mendapat worktree & branch unik (`latch/<project>/<short-id>`), diff paginasi, simulasi konflik (`git merge-tree --write-tree`), serta squash/merge atau discard idempoten.
-- **Multi-Session PTY Pool** — `portable-pty` di OS thread khusus, batching output 12 ms, ring buffer 1 MiB, log rolling, layar virtual `vt100`, serta kontrol process group (`SIGSTOP`/`SIGCONT`/`SIGTERM`→`SIGKILL`).
-- **TUI Interaktif (`latch tui`)** — berbasis `ratatui` + `tui-term` dengan daftar sesi, panel PTY live, scrollback, diff popup, dan aksi cepat.
-- **Keamanan & Privasi Dasar** — socket UDS `0600` dengan verifikasi `SO_PEERCRED`, redaksi otomatis pola API key/token pada log & audit, serta arsitektur zero-OpenSSL (`rustls` + `rusqlite bundled`).
+- **Single Binary (`latch` & `latchd` alias)** — daemon mode, one-shot CLI client, and interactive TUI in one executable.
+- **Persistent State (SQLite WAL)** — `rusqlite` (`bundled`), single-writer actor thread, automatic migrations, and startup crash reconciliation.
+- **Automatic `git worktree` Isolation** — each session gets a dedicated worktree and branch (`latch/<project>/<short-id>`), paginated diffs, conflict simulation (`git merge-tree --write-tree`), and idempotent squash/merge or discard.
+- **Multi-Session PTY Pool** — `portable-pty` on dedicated OS threads, 12 ms output batching, 1 MiB ring buffer, rolling logs, `vt100` virtual screen snapshots, and process-group control (`SIGSTOP`/`SIGCONT`/`SIGTERM`→`SIGKILL`).
+- **Interactive TUI (`latch tui`)** — powered by `ratatui` + `tui-term` with a live session list, embedded PTY viewport, scrollback, diff popup, and confirmation dialogs.
+- **Security & Privacy Foundations** — `0600` Unix Domain Socket with `SO_PEERCRED` UID verification, automatic secret/API-key redaction in logs and audit records, and a zero-OpenSSL dependency tree (`rustls` + `rusqlite bundled`).
 
-### Benchmark Terukur (`v0.1` release)
+### Measured Performance (`v0.1` release)
 
-| Metrik | Terukur | Target Anggaran |
+| Metric | Measured | Budget |
 | :--- | ---: | ---: |
-| Daemon idle RSS | **~10.5 MB** (10,720 kB) | ≤ 25 MB |
-| Overhead per sesi PTY aktif | **~328 KB** | ≤ 5 MB |
-| Ukuran binary release | **4.6 MB** | < 30 MB |
+| Idle daemon RSS | **~10.5 MB** (10,720 kB) | ≤ 25 MB |
+| Overhead per active PTY session | **~328 KB** | ≤ 5 MB |
+| Release binary size | **4.6 MB** | < 30 MB |
 
 ---
 
-## Struktur Workspace
+## Platform Support
+
+| Platform | Status (`v0.1`) | Notes |
+| :--- | :--- | :--- |
+| **Linux (x86_64)** | Supported | Primary target; static `musl` build supported; Landlock sandbox planned for `v0.3` |
+| **macOS** | Partial / Experimental | Shares Unix socket & POSIX process-group foundations; CI build verification planned |
+| **Windows** | WSL2 only | Native Windows support (IPC + ConPTY/Job Object process control) is not yet implemented |
+
+---
+
+## Workspace Structure
 
 ```text
 latch-runtime/
 ├── Cargo.toml              # workspace root & shared dependencies
-├── cli/                    # entrypoint tunggal binary `latch`
+├── cli/                    # single-binary entrypoint (`latch`)
 ├── crates/
-│   ├── core/               # model domain, config parser, trait SandboxProvider, protokol UDS
-│   ├── store/              # SQLite (rusqlite bundled), migrasi, aktor penyimpanan
+│   ├── core/               # domain models, config parser, SandboxProvider trait, UDS protocol
+│   ├── store/              # SQLite (rusqlite bundled), migrations, single-writer actor
 │   ├── git-engine/         # worktree lifecycle, diff, merge-tree check, squash/merge
-│   ├── pty-pool/           # portable-pty, batching 12 ms, ring buffer, vt100, killpg
-│   ├── sandbox/            # trait SandboxProvider (v0.1: NoopProvider; v0.3: Landlock)
-│   ├── daemon/             # server UDS JSON-RPC, SessionManager, rekonsiliasi, redaksi log
-│   ├── tui/                # antarmuka terminal ratatui + tui-term
-│   ├── proxy/              # (Fase 2) local LLM reverse proxy, token/biaya, circuit breaker
-│   └── dag/                # (Fase 4) eksekutor pipeline workflow.toml & fan-out arena
+│   ├── pty-pool/           # portable-pty, 12 ms batching, ring buffer, vt100, killpg
+│   ├── sandbox/            # SandboxProvider implementations (v0.1: NoopProvider; v0.3: Landlock)
+│   ├── daemon/             # UDS JSON-RPC server, SessionManager, reconciliation, log redaction
+│   ├── tui/                # ratatui + tui-term terminal UI
+│   ├── proxy/              # (Phase 2) local LLM reverse proxy, token/cost tracking, circuit breaker
+│   └── dag/                # (Phase 4) workflow.toml DAG executor & fan-out arena
 └── scripts/
-    ├── bench-rss.sh        # benchmark anggaran RAM idle & per sesi
-    └── check-static.sh     # verifikasi binary statis musl & batas ukuran
+    ├── bench-rss.sh        # idle & per-session RSS budget benchmark
+    └── check-static.sh     # static musl linkage & < 30 MB size check
 ```
 
 ---
 
-## Prasyarat
+## Requirements
 
 - **Rust** stable (edition 2024)
-- **Git** ≥ `2.38` (dibutuhkan untuk `git merge-tree --write-tree`)
-- *(Opsional)* `musl-tools` untuk membangun binary statis penuh (`x86_64-unknown-linux-musl`)
+- **Git** ≥ `2.38` (required for `git merge-tree --write-tree`)
+- *(Optional)* `musl-tools` for building a fully static Linux binary (`x86_64-unknown-linux-musl`)
 
 ---
 
-## Instalasi & Build
+## Build & Install
 
 ```bash
 git clone https://github.com/fadiljee/latch-runtime.git
 cd latch-runtime
 
-# Build release
+# Standard release build
 cargo build --release -p latch
 
-# (Opsional) Build static binary penuh dengan musl
+# (Optional) Fully static musl build on Linux
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl -p latch
 ./scripts/check-static.sh target/x86_64-unknown-linux-musl/release/latch
 ```
 
-Binary hasil build tersedia di `target/release/latch`.
+The compiled binary is placed at `target/release/latch`.
 
 ---
 
 ## Quick Start
 
-### 1. Buat profil agen (`~/.config/latch/agents.toml`)
+### 1. Define agent profiles (`~/.config/latch/agents.toml`)
 
 ```toml
 [profiles.coder-claude]
@@ -122,32 +132,32 @@ args = ["-c", "echo hello > result.txt; sleep 1"]
 proxy_mode = "bypass"
 ```
 
-Validasi konfigurasi:
+Validate your configuration:
 
 ```bash
 latch config check
 ```
 
-### 2. Jalankan daemon dan proyek
+### 2. Start the daemon and register a project
 
 ```bash
-# Mulai daemon di background (atau --foreground untuk systemd)
+# Start the daemon in the background (or pass --foreground for systemd)
 latch daemon start
 
-# Daftarkan repositori Git
+# Register a Git repository
 latch project add my-repo /path/to/my-repo
 
-# Jalankan agen pada worktree terisolasi baru
-latch run --project my-repo --profile coder-claude --task "Tambahkan endpoint /health"
+# Launch an agent in a fresh isolated worktree
+latch run --project my-repo --profile coder-claude --task "Add /health endpoint"
 ```
 
-### 3. Pantau lewat TUI atau CLI
+### 3. Monitor via TUI or CLI
 
 ```bash
-# Buka dashboard TUI interaktif
+# Open the interactive TUI dashboard
 latch tui
 
-# Atau kelola via CLI
+# Or manage sessions from the CLI
 latch session list
 latch session attach <session-id>
 latch session diff <session-id>
@@ -156,23 +166,23 @@ latch session merge <session-id> --strategy squash
 latch session discard <session-id>
 ```
 
-### Pintasan Keyboard TUI (`latch tui`)
+### TUI Keyboard Shortcuts (`latch tui`)
 
-| Tombol | Aksi |
+| Key | Action |
 | :--- | :--- |
-| `j` / `k` atau `↑` / `↓` | Pilih sesi |
-| `Enter` | Masuk mode attach (input diteruskan ke PTY; `Ctrl-]` untuk detach) |
-| `PgUp` / `PgDn` | Scrollback output terminal |
-| `p` | Pause / Resume sesi (`SIGSTOP` / `SIGCONT`) |
-| `d` | Buka popup diff worktree (`j`/`k` scroll, `Esc` tutup) |
-| `m` | Squash-merge ke branch utama (dengan konfirmasi `y/n`) |
-| `D` | Discard worktree & branch (dengan konfirmasi `y/n`) |
-| `x` | Kill sesi (dengan konfirmasi `y/n`) |
-| `q` | Keluar dari TUI |
+| `j` / `k` or `↑` / `↓` | Select session |
+| `Enter` | Enter attach mode (forwards keystrokes to PTY; `Ctrl-]` to detach) |
+| `PgUp` / `PgDn` | Scroll PTY output history |
+| `p` | Pause / Resume session (`SIGSTOP` / `SIGCONT`) |
+| `d` | Open worktree diff popup (`j`/`k` to scroll, `Esc` to close) |
+| `m` | Squash-merge into default branch (`y/n` confirmation) |
+| `D` | Discard worktree & branch (`y/n` confirmation) |
+| `x` | Kill running session (`y/n` confirmation) |
+| `q` | Quit TUI |
 
 ---
 
-## Pengujian & Verifikasi
+## Testing & Verification
 
 ```bash
 cargo fmt --all -- --check
@@ -185,7 +195,7 @@ cargo test --workspace
 
 ## Roadmap
 
-- **v0.1 (Selesai):** Daemon UDS, SQLite WAL, `git worktree` + diff/merge, PTY pool, CLI, TUI.
-- **v0.2:** Local LLM reverse proxy (token/biaya real-time, circuit breaker), Embedded Web PWA (`rust-embed`), notifikasi, remote tunnel.
-- **v0.3:** OS Sandbox Landlock (`pre_exec`), denylist path sensitif, Approval Gate (TUI & Web).
-- **v1.0:** Pipeline DAG (`workflow.toml`), auto-retry gate, fan-out arena multi-model, hibernasi sesi idle.
+- **v0.1 (Done):** UDS daemon, SQLite WAL, `git worktree` + diff/merge, PTY pool, CLI, TUI.
+- **v0.2:** Local LLM reverse proxy (real-time token/cost tracking, circuit breaker), embedded Web PWA (`rust-embed`), notifications, remote tunnel.
+- **v0.3:** Landlock OS sandbox (`pre_exec`), sensitive path denylist, Approval Gate (TUI & Web).
+- **v1.0:** `workflow.toml` DAG pipelines, auto-retry gate, multi-model fan-out arena, idle session hibernation.
