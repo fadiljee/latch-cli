@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout)]
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
 use latch_core::model::Session;
 use std::io::{self, Write};
@@ -24,10 +24,13 @@ pub const LATCH_ICON: [&str; 11] = [
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
+const REVERSE: &str = "\x1b[7m";
 const WHITE: &str = "\x1b[38;2;250;250;250m";
 const SILVER: &str = "\x1b[38;2;203;213;225m";
 const GRAY: &str = "\x1b[38;2;148;163;184m";
 const DARK: &str = "\x1b[38;2;82;82;91m";
+
+const MENU_PAGE_SIZE: usize = 7;
 
 pub struct WelcomeInfo<'a> {
     pub version: &'a str,
@@ -69,13 +72,13 @@ pub fn print_welcome(info: &WelcomeInfo<'_>) {
             "{GRAY}Agents    :{RESET} {WHITE}All Agents Supported{RESET} {DIM}({installed_str}){RESET}"
         ),
         format!(
-            "{GRAY}Active    :{RESET} {BOLD}{WHITE}{}{RESET}  {DIM}(/agent to switch · /login to sign in){RESET}",
+            "{GRAY}Active    :{RESET} {BOLD}{WHITE}{}{RESET}  {DIM}(/agent to switch · /login for OAuth){RESET}",
             info.active_agent
         ),
         session_line,
         String::new(),
         format!(
-            "{GRAY}Commands  :{RESET} {SILVER}/new  /agent  /login  /sessions  /attach  /diff{RESET}"
+            "{GRAY}Commands  :{RESET} {SILVER}/login  /agent  /new  /sessions  /attach  /diff{RESET}"
         ),
         format!("            {SILVER}/merge  /discard  /pause  /kill  /status  /help{RESET}"),
         String::new(),
@@ -156,9 +159,9 @@ pub fn print_mono_diff(patch: &str) {
 }
 
 pub const SLASH_MENU: &[(&str, &str)] = &[
+    ("/login", "Choose OAuth account login for any agent"),
+    ("/agent", "Choose or switch the active coding agent"),
     ("/new", "Open a new isolated worktree session"),
-    ("/agent", "List all agents or switch active agent"),
-    ("/login", "Sign in to an agent with your account (OAuth)"),
     ("/run", "Run a specific agent on a task"),
     ("/sessions", "List all active and completed sessions"),
     (
@@ -189,7 +192,9 @@ pub fn print_help() {
         println!("    {WHITE}{cmd:<14}{RESET} {GRAY}{desc}{RESET}");
     }
     println!();
-    println!("  {DIM}Type any prompt directly to send it to your active agent session.{RESET}");
+    println!(
+        "  {DIM}Type `/` then use ↑/↓ or PgUp/PgDn to browse commands, Enter/Tab to select.{RESET}"
+    );
 }
 
 pub enum PromptResult {
@@ -206,7 +211,93 @@ impl Drop for RawGuard {
     }
 }
 
-/// Prompt input bergaya Antigravity CLI dengan border monokrom dan dropdown slash-command live.
+/// Menu pemilih interaktif monokrom (mis. untuk daftar OAuth login atau pilih agen).
+pub fn select_menu(title: &str, items: &[(String, String)]) -> io::Result<Option<usize>> {
+    if items.is_empty() {
+        return Ok(None);
+    }
+    let mut stdout = io::stdout();
+    let mut selected: usize = 0;
+
+    enable_raw_mode()?;
+    let _guard = RawGuard;
+
+    let mut rendered_lines: usize = 0;
+    loop {
+        if rendered_lines > 0 {
+            write!(stdout, "\x1b[{rendered_lines}A\r\x1b[J")?;
+        }
+
+        let start = (selected / MENU_PAGE_SIZE) * MENU_PAGE_SIZE;
+        let end = (start + MENU_PAGE_SIZE).min(items.len());
+        let page_num = (selected / MENU_PAGE_SIZE) + 1;
+        let total_pages = items.len().div_ceil(MENU_PAGE_SIZE);
+
+        write!(
+            stdout,
+            "  {BOLD}{WHITE}{title}{RESET}  {DIM}(↑/↓ select · PgUp/PgDn page {page_num}/{total_pages} · Enter confirm · Esc cancel){RESET}\r\n"
+        )?;
+        let mut lines = 1usize;
+
+        for (idx, (label, desc)) in items.iter().enumerate().take(end).skip(start) {
+            if idx == selected {
+                write!(stdout, "  {REVERSE}{BOLD} ▸ {label:<12} {desc} {RESET}\r\n")?;
+            } else {
+                write!(
+                    stdout,
+                    "    {SILVER}{label:<12}{RESET} {GRAY}{desc}{RESET}\r\n"
+                )?;
+            }
+            lines += 1;
+        }
+        stdout.flush()?;
+        rendered_lines = lines;
+
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind,
+            ..
+        }) = event::read()?
+        {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
+            match (code, modifiers) {
+                (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                    write!(stdout, "\x1b[{rendered_lines}A\r\x1b[J")?;
+                    stdout.flush()?;
+                    return Ok(None);
+                }
+                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                    selected = if selected == 0 {
+                        items.len() - 1
+                    } else {
+                        selected - 1
+                    };
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                    selected = (selected + 1) % items.len();
+                }
+                (KeyCode::PageUp, _) => {
+                    selected = selected.saturating_sub(MENU_PAGE_SIZE);
+                }
+                (KeyCode::PageDown, _) => {
+                    selected = (selected + MENU_PAGE_SIZE).min(items.len() - 1);
+                }
+                (KeyCode::Enter, _) => {
+                    write!(stdout, "\x1b[{rendered_lines}A\r\x1b[J")?;
+                    stdout.flush()?;
+                    return Ok(Some(selected));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Prompt input bergaya Antigravity CLI dengan border monokrom, Backspace penuh,
+/// serta navigasi dropdown `/` menggunakan ↑/↓ dan PgUp/PgDn.
 pub fn read_prompt(
     agent: &str,
     workspace: &str,
@@ -230,6 +321,8 @@ pub fn read_prompt(
     let mut buf = String::new();
     let mut cursor: usize = 0;
     let mut hist_idx: Option<usize> = None;
+    let mut menu_idx: usize = 0;
+    let mut menu_dismissed = false;
 
     redraw_prompt(
         &mut stdout,
@@ -240,13 +333,33 @@ pub fn read_prompt(
         &sess_tag,
         &buf,
         cursor,
+        menu_idx,
+        menu_dismissed,
+        agent_names,
     )?;
 
     loop {
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind,
+            ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
+
+            let suggestions = if menu_dismissed {
+                Vec::new()
+            } else {
+                matching_suggestions(&buf, agent_names)
+            };
+            let menu_open = !suggestions.is_empty();
+            if menu_open && menu_idx >= suggestions.len() {
+                menu_idx = suggestions.len() - 1;
+            }
+
             match (code, modifiers) {
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                     if buf.is_empty() {
@@ -256,16 +369,8 @@ pub fn read_prompt(
                     buf.clear();
                     cursor = 0;
                     hist_idx = None;
-                    redraw_prompt(
-                        &mut stdout,
-                        &prefix,
-                        &rule,
-                        agent,
-                        workspace,
-                        &sess_tag,
-                        &buf,
-                        cursor,
-                    )?;
+                    menu_idx = 0;
+                    menu_dismissed = false;
                 }
                 (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                     if buf.is_empty() {
@@ -277,101 +382,66 @@ pub fn read_prompt(
                     clear_below_and_finish(&mut stdout)?;
                     return Ok(PromptResult::Clear);
                 }
+                (KeyCode::Esc, _) => {
+                    if menu_open {
+                        menu_dismissed = true;
+                    }
+                }
                 (KeyCode::Enter, _) => {
+                    // Jika dropdown `/` terbuka dan pengguna belum menulis lengkap, pilih item tersorot.
+                    if menu_open {
+                        let chosen = &suggestions[menu_idx].0;
+                        let trimmed = buf.trim();
+                        if trimmed != chosen {
+                            buf = chosen.clone();
+                        }
+                    }
                     clear_below_and_finish(&mut stdout)?;
                     return Ok(PromptResult::Line(buf));
                 }
-                (KeyCode::Backspace, _) => {
+                (KeyCode::Backspace, _)
+                | (KeyCode::Char('\x7f' | '\x08'), _)
+                | (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
                     if cursor > 0 {
                         let prev = prev_char_boundary(&buf, cursor);
                         buf.drain(prev..cursor);
                         cursor = prev;
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
+                        menu_idx = 0;
+                        menu_dismissed = false;
                     }
                 }
                 (KeyCode::Delete, _) => {
                     if cursor < buf.len() {
                         let next = next_char_boundary(&buf, cursor);
                         buf.drain(cursor..next);
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
+                        menu_idx = 0;
+                        menu_dismissed = false;
                     }
                 }
                 (KeyCode::Left, _) => {
                     if cursor > 0 {
                         cursor = prev_char_boundary(&buf, cursor);
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
                     }
                 }
                 (KeyCode::Right, _) => {
                     if cursor < buf.len() {
                         cursor = next_char_boundary(&buf, cursor);
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
                     }
                 }
                 (KeyCode::Home, _) => {
                     cursor = 0;
-                    redraw_prompt(
-                        &mut stdout,
-                        &prefix,
-                        &rule,
-                        agent,
-                        workspace,
-                        &sess_tag,
-                        &buf,
-                        cursor,
-                    )?;
                 }
                 (KeyCode::End, _) => {
                     cursor = buf.len();
-                    redraw_prompt(
-                        &mut stdout,
-                        &prefix,
-                        &rule,
-                        agent,
-                        workspace,
-                        &sess_tag,
-                        &buf,
-                        cursor,
-                    )?;
                 }
                 (KeyCode::Up, _) => {
-                    if !history.is_empty() {
+                    if menu_open {
+                        menu_idx = if menu_idx == 0 {
+                            suggestions.len() - 1
+                        } else {
+                            menu_idx - 1
+                        };
+                    } else if !history.is_empty() {
                         let next_idx = match hist_idx {
                             None => history.len() - 1,
                             Some(0) => 0,
@@ -380,20 +450,12 @@ pub fn read_prompt(
                         hist_idx = Some(next_idx);
                         buf.clone_from(&history[next_idx]);
                         cursor = buf.len();
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
                     }
                 }
                 (KeyCode::Down, _) => {
-                    if let Some(i) = hist_idx {
+                    if menu_open {
+                        menu_idx = (menu_idx + 1) % suggestions.len();
+                    } else if let Some(i) = hist_idx {
                         if i + 1 < history.len() {
                             hist_idx = Some(i + 1);
                             buf.clone_from(&history[i + 1]);
@@ -402,52 +464,83 @@ pub fn read_prompt(
                             buf.clear();
                         }
                         cursor = buf.len();
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
+                    }
+                }
+                (KeyCode::PageUp, _) => {
+                    if menu_open {
+                        menu_idx = menu_idx.saturating_sub(MENU_PAGE_SIZE);
+                    }
+                }
+                (KeyCode::PageDown, _) => {
+                    if menu_open {
+                        menu_idx = (menu_idx + MENU_PAGE_SIZE).min(suggestions.len() - 1);
                     }
                 }
                 (KeyCode::Tab, _) => {
-                    if let Some(completed) = autocomplete(&buf, agent_names) {
-                        buf = completed;
+                    if menu_open {
+                        let chosen = &suggestions[menu_idx].0;
+                        buf = format!("{chosen} ");
                         cursor = buf.len();
-                        redraw_prompt(
-                            &mut stdout,
-                            &prefix,
-                            &rule,
-                            agent,
-                            workspace,
-                            &sess_tag,
-                            &buf,
-                            cursor,
-                        )?;
+                        menu_idx = 0;
+                        menu_dismissed = false;
                     }
                 }
                 (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                     buf.insert(cursor, c);
                     cursor += c.len_utf8();
-                    redraw_prompt(
-                        &mut stdout,
-                        &prefix,
-                        &rule,
-                        agent,
-                        workspace,
-                        &sess_tag,
-                        &buf,
-                        cursor,
-                    )?;
+                    menu_idx = 0;
+                    menu_dismissed = false;
                 }
                 _ => {}
             }
+
+            redraw_prompt(
+                &mut stdout,
+                &prefix,
+                &rule,
+                agent,
+                workspace,
+                &sess_tag,
+                &buf,
+                cursor,
+                menu_idx,
+                menu_dismissed,
+                agent_names,
+            )?;
         }
     }
+}
+
+fn matching_suggestions(input: &str, agent_names: &[String]) -> Vec<(String, String)> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('/') {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() <= 1 && !trimmed.ends_with(' ') {
+        let needle = parts.first().copied().unwrap_or("/");
+        return SLASH_MENU
+            .iter()
+            .filter(|(c, _)| c.starts_with(needle))
+            .map(|(c, d)| ((*c).to_string(), (*d).to_string()))
+            .collect();
+    }
+    if matches!(parts.first().copied(), Some("/agent" | "/login" | "/run")) && parts.len() <= 2 {
+        let cmd = parts[0];
+        let needle = if trimmed.ends_with(' ') && parts.len() == 1 {
+            ""
+        } else if parts.len() == 2 && !trimmed.ends_with(' ') {
+            parts[1]
+        } else {
+            return Vec::new();
+        };
+        return agent_names
+            .iter()
+            .filter(|a| a.starts_with(needle))
+            .map(|a| (format!("{cmd} {a}"), format!("Select agent '{a}'")))
+            .collect();
+    }
+    Vec::new()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -460,31 +553,49 @@ fn redraw_prompt(
     sess_tag: &str,
     buf: &str,
     cursor: usize,
+    menu_idx: usize,
+    menu_dismissed: bool,
+    agent_names: &[String],
 ) -> io::Result<()> {
-    // Baris input utama + border bawah + status bar + dropdown slash command jika mengetik `/`
     write!(stdout, "\r\x1b[J{prefix}{WHITE}{buf}{RESET}")?;
     write!(stdout, "\r\n  {DARK}└{rule}┘{RESET}")?;
     write!(
         stdout,
-        "\r\n  {DIM}{agent} · {workspace}{sess_tag} · / commands · Tab complete · Ctrl+C exit{RESET}"
+        "\r\n  {DIM}{agent} · {workspace}{sess_tag} · / commands · ↑/↓ & PgUp/PgDn select · Tab complete · Ctrl+C exit{RESET}"
     )?;
 
     let mut extra_lines: usize = 2;
-    let trimmed = buf.trim_start();
-    if trimmed.starts_with('/') && !trimmed.contains(' ') {
-        let matches: Vec<(&str, &str)> = SLASH_MENU
-            .iter()
-            .copied()
-            .filter(|(c, _)| c.starts_with(trimmed))
-            .take(6)
-            .collect();
-        for (cmd, desc) in matches {
-            write!(stdout, "\r\n    {WHITE}{cmd:<12}{RESET} {DIM}{desc}{RESET}")?;
-            extra_lines += 1;
+    if !menu_dismissed {
+        let suggestions = matching_suggestions(buf, agent_names);
+        if !suggestions.is_empty() {
+            let sel = menu_idx.min(suggestions.len() - 1);
+            let start = (sel / MENU_PAGE_SIZE) * MENU_PAGE_SIZE;
+            let end = (start + MENU_PAGE_SIZE).min(suggestions.len());
+            let page = (sel / MENU_PAGE_SIZE) + 1;
+            let total_pages = suggestions.len().div_ceil(MENU_PAGE_SIZE);
+
+            for (idx, (cmd, desc)) in suggestions.iter().enumerate().take(end).skip(start) {
+                if idx == sel {
+                    write!(stdout, "\r\n    {REVERSE}{BOLD} ▸ {cmd:<16} {desc} {RESET}")?;
+                } else {
+                    write!(
+                        stdout,
+                        "\r\n      {SILVER}{cmd:<16}{RESET} {DIM}{desc}{RESET}"
+                    )?;
+                }
+                extra_lines += 1;
+            }
+            if total_pages > 1 {
+                write!(
+                    stdout,
+                    "\r\n      {DIM}page {page}/{total_pages} — PgUp/PgDn for more ({} commands){RESET}",
+                    suggestions.len()
+                )?;
+                extra_lines += 1;
+            }
         }
     }
 
-    // Kembalikan kursor ke baris input pada posisi kolom yang tepat.
     write!(stdout, "\x1b[{extra_lines}A\r")?;
     let visual_col = 6 + buf[..cursor].chars().count();
     write!(stdout, "\x1b[{visual_col}C")?;
@@ -510,37 +621,4 @@ fn next_char_boundary(s: &str, idx: usize) -> usize {
         i += 1;
     }
     i
-}
-
-fn autocomplete(input: &str, agent_names: &[String]) -> Option<String> {
-    let trimmed = input.trim_start();
-    if !trimmed.starts_with('/') {
-        return None;
-    }
-    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-    if parts.len() <= 1 && !trimmed.ends_with(' ') {
-        let needle = parts.first().copied().unwrap_or("/");
-        let matches: Vec<&str> = SLASH_MENU
-            .iter()
-            .map(|(c, _)| *c)
-            .filter(|c| c.starts_with(needle))
-            .collect();
-        if matches.len() == 1 {
-            return Some(format!("{} ", matches[0]));
-        }
-    } else if matches!(parts.first().copied(), Some("/agent" | "/login" | "/run")) {
-        let needle = if trimmed.ends_with(' ') {
-            ""
-        } else {
-            parts.get(1).copied().unwrap_or("")
-        };
-        let matches: Vec<&String> = agent_names
-            .iter()
-            .filter(|a| a.starts_with(needle))
-            .collect();
-        if matches.len() == 1 {
-            return Some(format!("{} {} ", parts[0], matches[0]));
-        }
-    }
-    None
 }

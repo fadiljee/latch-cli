@@ -266,6 +266,13 @@ pub fn builtin_profiles() -> BTreeMap<String, AgentProfile> {
     };
 
     add(
+        "antigravity",
+        "agy",
+        &[],
+        &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        &["~/.gemini"],
+    );
+    add(
         "claude",
         "claude",
         &[],
@@ -304,6 +311,29 @@ pub fn builtin_profiles() -> BTreeMap<String, AgentProfile> {
         ],
         &["~/.aider"],
     );
+    add("amp", "amp", &[], &["AMP_API_KEY"], &["~/.config/amp"]);
+    add(
+        "cline",
+        "cline",
+        &[],
+        &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+        &["~/.cline"],
+    );
+    add(
+        "copilot",
+        "copilot",
+        &[],
+        &["GITHUB_TOKEN"],
+        &["~/.config/github-copilot"],
+    );
+    add(
+        "cursor",
+        "cursor-agent",
+        &[],
+        &["CURSOR_API_KEY"],
+        &["~/.cursor"],
+    );
+    add("droid", "droid", &[], &["FACTORY_API_KEY"], &["~/.factory"]);
     add(
         "goose",
         "goose",
@@ -311,6 +341,7 @@ pub fn builtin_profiles() -> BTreeMap<String, AgentProfile> {
         &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"],
         &["~/.config/goose"],
     );
+    add("kiro", "kiro-cli", &[], &[], &["~/.kiro"]);
     add(
         "qwen",
         "qwen",

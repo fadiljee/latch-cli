@@ -23,7 +23,21 @@ pub fn run() -> anyhow::Result<()> {
         .collect();
 
     let preferred = [
-        "claude", "codex", "gemini", "opencode", "aider", "goose", "qwen", "shell",
+        "antigravity",
+        "claude",
+        "codex",
+        "gemini",
+        "opencode",
+        "cursor",
+        "amp",
+        "cline",
+        "copilot",
+        "aider",
+        "goose",
+        "kiro",
+        "droid",
+        "qwen",
+        "shell",
     ];
     let mut active_agent = preferred
         .iter()
@@ -241,7 +255,32 @@ fn handle_input(
         }
         "/agent" | "/agents" => {
             if rest.is_empty() {
-                crate::cmd_agents(false)
+                let agents = load_effective_agents(&paths.agents_file())?;
+                let items: Vec<(String, String)> = agents
+                    .profiles
+                    .iter()
+                    .map(|(name, prof)| {
+                        let status = if crate::command_in_path(&prof.command) {
+                            "installed"
+                        } else {
+                            "not found"
+                        };
+                        let active_mark = if name == active_agent.as_str() {
+                            " (active)"
+                        } else {
+                            ""
+                        };
+                        (
+                            name.clone(),
+                            format!("cmd: {:<10} [{}]{}", prof.command, status, active_mark),
+                        )
+                    })
+                    .collect();
+                if let Some(idx) = ui::select_menu("Select Active Agent", &items)? {
+                    *active_agent = items[idx].0.clone();
+                    ui::print_ok(&format!("Switched active agent to '{active_agent}'"));
+                }
+                Ok(())
             } else {
                 let agents = load_effective_agents(&paths.agents_file())?;
                 if !agents.profiles.contains_key(rest) {
@@ -255,12 +294,11 @@ fn handle_input(
             }
         }
         "/login" => {
-            let target = if rest.is_empty() {
-                active_agent.as_str()
+            if rest.is_empty() {
+                crate::cmd_login_interactive()
             } else {
-                rest
-            };
-            crate::cmd_login(target)
+                crate::cmd_login(rest)
+            }
         }
         "/init" => crate::cmd_init(rest == "--force"),
         "/run" => {

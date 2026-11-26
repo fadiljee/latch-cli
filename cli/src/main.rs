@@ -48,8 +48,8 @@ enum Commands {
     Agents,
     /// Sign in to an AI coding agent using your subscription account (OAuth).
     Login {
-        /// Agent profile name (e.g. claude, codex, gemini, opencode, goose, qwen).
-        agent: String,
+        /// Optional agent profile name; omit to open the interactive OAuth picker.
+        agent: Option<String>,
     },
     /// Create a starter ~/.config/latch/agents.toml file for custom profiles.
     Init {
@@ -215,7 +215,10 @@ fn main() -> anyhow::Result<()> {
             DaemonCmd::Status => cmd_daemon_status(cli.json),
         },
         Commands::Agents => cmd_agents(cli.json),
-        Commands::Login { agent } => cmd_login(&agent),
+        Commands::Login { agent } => match agent {
+            Some(name) => cmd_login(&name),
+            None => cmd_login_interactive(),
+        },
         Commands::Init { force } => cmd_init(force),
         Commands::Project { action } => cmd_project(action, cli.json),
         Commands::Run(args) => cmd_run(args, cli.json),
@@ -358,6 +361,71 @@ pub(crate) fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn cmd_login_interactive() -> anyhow::Result<()> {
+    let paths = Paths::resolve()?;
+    let agents = load_effective_agents(&paths.agents_file())?;
+    let oauth_providers: &[(&str, &str)] = &[
+        (
+            "antigravity",
+            "Antigravity CLI — Google account OAuth (`agy login`)",
+        ),
+        (
+            "claude",
+            "Claude Code — Anthropic account OAuth (`claude login`)",
+        ),
+        (
+            "codex",
+            "OpenAI Codex — ChatGPT account OAuth (`codex login`)",
+        ),
+        ("gemini", "Gemini CLI — Google account OAuth (`gemini`)"),
+        (
+            "opencode",
+            "OpenCode — Provider account OAuth (`opencode auth login`)",
+        ),
+        ("amp", "Amp — Sourcegraph account OAuth (`amp login`)"),
+        (
+            "copilot",
+            "GitHub Copilot CLI — GitHub account OAuth (`copilot`)",
+        ),
+        (
+            "cursor",
+            "Cursor Agent — Cursor account OAuth (`cursor-agent login`)",
+        ),
+        (
+            "cline",
+            "Cline CLI — Account / provider auth (`cline auth`)",
+        ),
+        ("droid", "Factory Droid — Account OAuth (`droid`)"),
+        (
+            "goose",
+            "Goose CLI — Interactive account/provider setup (`goose configure`)",
+        ),
+        (
+            "kiro",
+            "Kiro CLI — AWS / Builder ID OAuth (`kiro-cli login`)",
+        ),
+        ("qwen", "Qwen Code — Account OAuth (`qwen`)"),
+    ];
+
+    let mut items: Vec<(String, String)> = Vec::new();
+    for &(name, desc) in oauth_providers {
+        if let Some(prof) = agents.profiles.get(name) {
+            let status = if command_in_path(&prof.command) {
+                "installed"
+            } else {
+                "not found"
+            };
+            items.push((name.to_string(), format!("{desc} [{status}]")));
+        }
+    }
+
+    if let Some(idx) = ui::select_menu("Choose OAuth Account Login", &items)? {
+        let chosen = &items[idx].0;
+        return cmd_login(chosen);
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_login(agent: &str) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     let agents = load_effective_agents(&paths.agents_file())?;
@@ -377,9 +445,9 @@ pub(crate) fn cmd_login(agent: &str) -> anyhow::Result<()> {
     }
 
     let login_args: &[&str] = match agent {
-        "claude" => &["login"],
-        "codex" => &["login"],
+        "antigravity" | "claude" | "codex" | "amp" | "cursor" | "kiro" => &["login"],
         "opencode" => &["auth", "login"],
+        "cline" => &["auth"],
         "goose" => &["configure"],
         _ => &[],
     };
