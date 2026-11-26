@@ -64,7 +64,7 @@ npm install -g latch-runtime
 latch-cli --help
 
 # Or run directly from GitHub
-npx github:fadiljee/latch-runtime --help
+npx github:fadiljee/latch-cli --help
 ```
 
 ### Build from Source (Rust)
@@ -72,8 +72,8 @@ npx github:fadiljee/latch-runtime --help
 Requirements: **Rust** stable (edition 2024) and **Git** ≥ `2.38`.
 
 ```bash
-git clone https://github.com/fadiljee/latch-runtime.git
-cd latch-runtime
+git clone https://github.com/fadiljee/latch-cli.git
+cd latch-cli
 
 # Standard release build
 cargo build --release -p latch-cli

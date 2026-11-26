@@ -97,7 +97,7 @@ async function main() {
   }
 
   const asset = `latch-cli-${triple}.tar.gz`;
-  const url = `https://github.com/fadiljee/latch-runtime/releases/download/v${pkg.version}/${asset}`;
+  const url = `https://github.com/fadiljee/latch-cli/releases/download/v${pkg.version}/${asset}`;
   fs.mkdirSync(nativeDir, { recursive: true });
   const archivePath = path.join(nativeDir, asset);
 
