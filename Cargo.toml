@@ -58,6 +58,7 @@ nix = { version = "0.30", default-features = false, features = ["signal", "proce
 crossterm = "0.29"
 regex = { version = "1.11", default-features = false, features = ["std", "perf"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 tempfile = "3.20"
 proptest = "1.7"

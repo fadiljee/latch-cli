@@ -115,11 +115,15 @@ latch-cli
 ```
 
 Inside the interactive prompt:
-- Type any task directly to launch your active agent in an isolated worktree and attach live (`Ctrl-]` to return to Latch).
-- Type `/` to open the live slash-command menu (`Tab` to autocomplete):
+- Type any task directly to run it right inside your active worktree:
+  - **Bridge Streaming (OAuth agents):** forwards prompts directly to `antigravity`, `codex`, `claude`, `gemini`, `opencode`, `copilot`, etc. using your account login.
+  - **Built-in Native Rust Agent (`latch`):** 100% standalone agentic loop (Anthropic / OpenAI / Gemini / OpenRouter via `rustls`) with built-in workspace tools (`list_files`, `read_file`, `write_file`, `edit_file`, `search_text`, `run_command`).
+- Type `/` to open the live slash-command menu (`↑`/`↓` or `PgUp`/`PgDn` to browse, `Tab` to complete, `Enter` to select):
+  - `/login` — interactive OAuth account login picker for all agents
+  - `/agent` — interactive picker to switch between any external CLI agent or built-in `latch`
+  - `/mode` — switch execution mode (`confirm`, `accept-edits`, `auto`, `plan`)
+  - `/model` — view or set the LLM model for the built-in `latch` agent
   - `/new` — open another parallel worktree session
-  - `/agent [name]` — list all agents or switch the active default agent
-  - `/login [agent]` — sign in with your subscription account
   - `/sessions` — list all active & completed sessions
   - `/attach [id]` — attach interactively to a running PTY (`Ctrl-]` to detach)
   - `/diff [id]` — inspect unified git diff

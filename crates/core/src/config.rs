@@ -266,6 +266,19 @@ pub fn builtin_profiles() -> BTreeMap<String, AgentProfile> {
     };
 
     add(
+        "latch",
+        "latch-cli",
+        &[],
+        &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+        ],
+        &[],
+    );
+    add(
         "antigravity",
         "agy",
         &[],

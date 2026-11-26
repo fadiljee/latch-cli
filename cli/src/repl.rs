@@ -1,14 +1,16 @@
 #![allow(clippy::print_stdout)]
 
+use crate::agent::{self, ExecMode, NativeAgentState};
 use crate::ui::{self, PromptResult, WelcomeInfo};
 use latch_core::client::Client;
 use latch_core::config::{Paths, load_effective_agents};
 use latch_core::model::{Project, Session};
 use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-/// Menjalankan antarmuka CLI interaktif monokrom bergaya Antigravity CLI dan langsung membuka sesi.
+/// Menjalankan antarmuka CLI interaktif monokrom bergaya Antigravity CLI,
+/// menggabungkan Bridge Streaming (OAuth CLI eksternal) dan Native Rust Agent (`latch`).
 pub fn run() -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     crate::ensure_daemon_running(&paths)?;
@@ -18,7 +20,7 @@ pub fn run() -> anyhow::Result<()> {
     let installed_agents: Vec<String> = agents
         .profiles
         .iter()
-        .filter(|(_, p)| crate::command_in_path(&p.command))
+        .filter(|(name, p)| name.as_str() == "latch" || crate::command_in_path(&p.command))
         .map(|(k, _)| k.clone())
         .collect();
 
@@ -37,22 +39,26 @@ pub fn run() -> anyhow::Result<()> {
         "kiro",
         "droid",
         "qwen",
+        "latch",
         "shell",
     ];
     let mut active_agent = preferred
         .iter()
         .find(|&&name| {
-            agents
-                .profiles
-                .get(name)
-                .is_some_and(|p| crate::command_in_path(&p.command))
+            name == "latch"
+                || agents
+                    .profiles
+                    .get(name)
+                    .is_some_and(|p| crate::command_in_path(&p.command))
         })
-        .map_or_else(|| "shell".to_string(), |s| (*s).to_string());
+        .map_or_else(|| "latch".to_string(), |s| (*s).to_string());
 
     let (workspace_name, branch_name) = detect_workspace();
 
-    // Langsung buka sesi baru di worktree terisolasi saat `latch-cli` dijalankan (bila di dalam repo Git).
-    let mut active_session: Option<Session> = open_session(&paths, &active_agent, None).ok();
+    // Langsung buka sesi worktree terisolasi saat `latch-cli` dijalankan di dalam repo Git.
+    let mut active_session: Option<Session> = open_session(&paths, "shell", None).ok();
+    let mut exec_mode = ExecMode::Confirm;
+    let mut native_state = NativeAgentState::default();
 
     draw_banner(
         &active_agent,
@@ -64,10 +70,10 @@ pub fn run() -> anyhow::Result<()> {
 
     if let Some(ref sess) = active_session {
         ui::print_ok(&format!(
-            "Session {} opened ({}) on branch {}",
+            "Session {} opened on branch {} (mode: {})",
             sess.id.short(),
-            sess.agent_profile,
-            sess.branch_name
+            sess.branch_name,
+            exec_mode.as_str()
         ));
         println!();
     }
@@ -75,8 +81,9 @@ pub fn run() -> anyhow::Result<()> {
     let mut history: Vec<String> = Vec::new();
     loop {
         let sess_short = active_session.as_ref().map(|s| s.id.short());
+        let label = format!("{} [{}]", active_agent, exec_mode.as_str());
         match ui::read_prompt(
-            &active_agent,
+            &label,
             &workspace_name,
             sess_short.as_deref(),
             &history,
@@ -108,6 +115,8 @@ pub fn run() -> anyhow::Result<()> {
                     line,
                     &paths,
                     &mut active_agent,
+                    &mut exec_mode,
+                    &mut native_state,
                     &mut active_session,
                     &workspace_name,
                     &branch_name,
@@ -180,28 +189,124 @@ fn detect_workspace() -> (String, String) {
     (name, branch)
 }
 
+fn active_workdir(active_session: Option<&Session>) -> PathBuf {
+    if let Some(sess) = active_session {
+        let p = PathBuf::from(&sess.worktree_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Menjalankan prompt langsung via Bridge Streaming untuk CLI agen eksternal (OAuth)
+/// di dalam worktree sesi aktif.
+fn run_bridge_prompt(
+    paths: &Paths,
+    agent_name: &str,
+    workdir: &Path,
+    mode: ExecMode,
+    prompt: &str,
+) -> anyhow::Result<()> {
+    let agents = load_effective_agents(&paths.agents_file())?;
+    let profile = agents
+        .profiles
+        .get(agent_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown agent profile: {agent_name}"))?;
+
+    if !crate::command_in_path(&profile.command) {
+        anyhow::bail!(
+            "'{}' is not installed on PATH. Switch agents with `/agent` (or select built-in `latch`).",
+            profile.command
+        );
+    }
+
+    let mut args: Vec<String> = profile.args.clone();
+    match agent_name {
+        "antigravity" => {
+            args.push("-p".to_string());
+            args.push(prompt.to_string());
+            let agy_mode = match mode {
+                ExecMode::Auto => Some("auto"),
+                ExecMode::AcceptEdits => Some("accept-edits"),
+                ExecMode::Plan => Some("plan"),
+                ExecMode::Confirm => None,
+            };
+            if let Some(m) = agy_mode {
+                args.push("--mode".to_string());
+                args.push(m.to_string());
+            }
+        }
+        "codex" => {
+            args.push("exec".to_string());
+            args.push(prompt.to_string());
+        }
+        "claude" | "gemini" | "copilot" | "qwen" => {
+            args.push("-p".to_string());
+            args.push(prompt.to_string());
+        }
+        "opencode" => {
+            args.push("run".to_string());
+            args.push(prompt.to_string());
+        }
+        "aider" => {
+            args.push("--message".to_string());
+            args.push(prompt.to_string());
+            if mode == ExecMode::Auto {
+                args.push("--yes".to_string());
+            }
+        }
+        "goose" => {
+            args = vec!["run".to_string(), "-t".to_string(), prompt.to_string()];
+        }
+        "shell" => {
+            args.push("-c".to_string());
+            args.push(prompt.to_string());
+        }
+        _ => {
+            args.push(prompt.to_string());
+        }
+    }
+
+    ui::print_info(&format!(
+        "bridge -> {} in {}",
+        agent_name,
+        workdir.display()
+    ));
+    println!();
+
+    let status = Command::new(&profile.command)
+        .args(&args)
+        .current_dir(workdir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        ui::print_warn(&format!("{agent_name} exited with {status}"));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_input(
     line: &str,
     paths: &Paths,
     active_agent: &mut String,
+    exec_mode: &mut ExecMode,
+    native_state: &mut NativeAgentState,
     active_session: &mut Option<Session>,
     workspace: &str,
     branch: &str,
     installed_agents: &[String],
 ) -> anyhow::Result<()> {
     if !line.starts_with('/') {
-        let sess = open_session(paths, active_agent, Some(line))?;
-        ui::print_ok(&format!(
-            "Started {} ({}) on branch {}",
-            sess.id.short(),
-            sess.agent_profile,
-            sess.branch_name
-        ));
-        ui::print_info("Attaching to PTY (press Ctrl-] to return to Latch)...");
-        let sid = sess.id.to_string();
-        *active_session = Some(sess);
-        return crate::attach_interactive(&paths.socket_path, &sid);
+        let workdir = active_workdir(active_session.as_ref());
+        if active_agent == "latch" {
+            return agent::run_native_turn(native_state, &workdir, *exec_mode, line);
+        }
+        return run_bridge_prompt(paths, active_agent, &workdir, *exec_mode, line);
     }
 
     let mut parts = line.splitn(2, char::is_whitespace);
@@ -227,6 +332,7 @@ fn handle_input(
             Ok(())
         }
         "/clear" => {
+            native_state.reset();
             ui::clear_screen();
             draw_banner(
                 active_agent,
@@ -237,17 +343,64 @@ fn handle_input(
             );
             Ok(())
         }
-        "/new" => {
-            let profile = if rest.is_empty() {
-                active_agent.as_str()
+        "/mode" => {
+            if rest.is_empty() {
+                let items = vec![
+                    (
+                        "confirm".to_string(),
+                        "Ask before every file write and shell command (safe default)".to_string(),
+                    ),
+                    (
+                        "accept-edits".to_string(),
+                        "Auto-approve file edits; ask before shell commands".to_string(),
+                    ),
+                    (
+                        "auto".to_string(),
+                        "Auto-approve all file edits and shell commands".to_string(),
+                    ),
+                    (
+                        "plan".to_string(),
+                        "Read-only planning mode (blocks writes and shell commands)".to_string(),
+                    ),
+                ];
+                if let Some(idx) = ui::select_menu("Select Execution Mode", &items)?
+                    && let Some(m) = ExecMode::parse(&items[idx].0)
+                {
+                    *exec_mode = m;
+                    ui::print_ok(&format!("Execution mode set to '{}'", m.as_str()));
+                }
+                Ok(())
+            } else if let Some(m) = ExecMode::parse(rest) {
+                *exec_mode = m;
+                ui::print_ok(&format!("Execution mode set to '{}'", m.as_str()));
+                Ok(())
             } else {
-                rest
-            };
+                anyhow::bail!("invalid mode '{rest}'. Choose: confirm, accept-edits, auto, plan")
+            }
+        }
+        "/model" => {
+            if rest.is_empty() {
+                let current = native_state
+                    .model_override
+                    .as_deref()
+                    .unwrap_or("(provider default)");
+                ui::print_info(&format!("Built-in `latch` model: {current}"));
+                ui::print_info(
+                    "Set with `/model <model-id>` (e.g. `/model claude-sonnet-4-20250514`, `/model gpt-4o`, `/model gemini-2.5-pro`).",
+                );
+            } else {
+                native_state.model_override = Some(rest.to_string());
+                ui::print_ok(&format!("Built-in `latch` model set to '{rest}'"));
+            }
+            Ok(())
+        }
+        "/new" => {
+            native_state.reset();
+            let profile = if rest.is_empty() { "shell" } else { rest };
             let sess = open_session(paths, profile, None)?;
             ui::print_ok(&format!(
-                "Opened session {} ({}) on branch {}",
+                "Opened session {} on branch {}",
                 sess.id.short(),
-                sess.agent_profile,
                 sess.branch_name
             ));
             *active_session = Some(sess);
@@ -260,7 +413,9 @@ fn handle_input(
                     .profiles
                     .iter()
                     .map(|(name, prof)| {
-                        let status = if crate::command_in_path(&prof.command) {
+                        let status = if name == "latch" {
+                            "built-in native agent"
+                        } else if crate::command_in_path(&prof.command) {
                             "installed"
                         } else {
                             "not found"
@@ -272,7 +427,7 @@ fn handle_input(
                         };
                         (
                             name.clone(),
-                            format!("cmd: {:<10} [{}]{}", prof.command, status, active_mark),
+                            format!("cmd: {:<12} [{}]{}", prof.command, status, active_mark),
                         )
                     })
                     .collect();
@@ -316,15 +471,13 @@ fn handle_input(
             };
             let sess = open_session(paths, profile, Some(task))?;
             ui::print_ok(&format!(
-                "Started {} ({}) on branch {}",
+                "Started background PTY session {} ({}) on branch {}",
                 sess.id.short(),
                 sess.agent_profile,
                 sess.branch_name
             ));
-            ui::print_info("Attaching to PTY (press Ctrl-] to return to Latch)...");
-            let sid = sess.id.to_string();
             *active_session = Some(sess);
-            crate::attach_interactive(&paths.socket_path, &sid)
+            Ok(())
         }
         "/sessions" | "/ls" => {
             let mut client = Client::connect(&paths.socket_path)?;

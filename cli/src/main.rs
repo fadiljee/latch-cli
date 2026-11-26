@@ -1,5 +1,6 @@
 #![allow(clippy::print_stdout)]
 
+mod agent;
 mod repl;
 mod ui;
 

@@ -160,9 +160,17 @@ pub fn print_mono_diff(patch: &str) {
 
 pub const SLASH_MENU: &[(&str, &str)] = &[
     ("/login", "Choose OAuth account login for any agent"),
-    ("/agent", "Choose or switch the active coding agent"),
+    (
+        "/agent",
+        "Choose or switch the active coding agent (incl. built-in latch)",
+    ),
+    (
+        "/mode",
+        "Switch execution mode (confirm, accept-edits, auto, plan)",
+    ),
+    ("/model", "View or change model for built-in latch agent"),
     ("/new", "Open a new isolated worktree session"),
-    ("/run", "Run a specific agent on a task"),
+    ("/run", "Run a specific agent in a background PTY worktree"),
     ("/sessions", "List all active and completed sessions"),
     (
         "/attach",
