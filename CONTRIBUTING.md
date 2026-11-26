@@ -1,82 +1,88 @@
-# Contributing
+# Contributing to Latch CLI
 
-Terima kasih sudah tertarik berkontribusi pada `latch`.
+Thank you for your interest in contributing to **Latch CLI** (`latch-cli`)!
 
-## Prasyarat
+## Prerequisites
 
-- Rust stable terbaru (`rustup`), plus target `x86_64-unknown-linux-musl` untuk build statis
-- `git` ≥ 2.38 (butuh `git merge-tree --write-tree`)
-- Node.js ≥ 20 dan npm (hanya untuk mengembangkan `web/`; tidak dibutuhkan saat runtime)
-- Opsional: `mold` atau `lld`, `cargo-nextest`, `cargo-bloat`, `cargo-deny`
-- Linux kernel ≥ 5.13 untuk menguji sandbox Landlock penuh
+- **Rust** stable (edition 2024, MSRV `1.90`), installed via [`rustup`](https://rustup.rs/)
+- Optional target for static Linux builds: `rustup target add x86_64-unknown-linux-musl` + `musl-tools`
+- **Git** ≥ `2.38` (required for `git merge-tree --write-tree`)
+- **Node.js** ≥ `18` (for testing the `npx`/`npm` wrapper)
+- Optional developer tools: `cargo-nextest`, `cargo-deny`, `cargo-bloat`
 
-## Setup
+## Local Setup
 
 ```bash
-git clone <repo-url> latch && cd latch
+git clone https://github.com/fadiljee/latch-cli.git
+cd latch-cli
 
-# Linker cepat (opsional) - .cargo/config.toml
-# [target.x86_64-unknown-linux-gnu]
-# linker = "clang"
-# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-cargo build
-cargo nextest run --workspace
-
-# Web (opsional)
-cd web && npm ci && npm run dev
+cargo build --workspace
+cargo nextest run --workspace   # fallback: cargo test --workspace
 ```
 
-## Alur kerja
+## Development Workflow
 
-1. Pilih task dari `docs/TASKS.md` atau buat issue untuk diskusi.
-2. Buat branch `feat/<crate>-<ringkas>`.
-3. Tulis tes terlebih dahulu bila memungkinkan.
-4. Jalankan:
+1. Open an issue or comment on an existing one to discuss non-trivial changes before implementing.
+2. Create a topic branch from `main`, e.g. `feat/<crate>-<short-name>` or `fix/<crate>-<short-name>`.
+3. Write unit and/or integration tests alongside your changes.
+4. Run the full verification gate before opening a Pull Request:
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
+node --check bin/latch-cli.js && node --check scripts/npm-install.js && npm pack --dry-run
 ```
 
-5. Perbarui dokumen dan `CHANGELOG.md` (bagian `Unreleased`).
-6. Buka Pull Request memakai templat di bawah.
+5. Update `README.md` and `CHANGELOG.md` (under `Unreleased`) when adding user-facing features or behavior changes.
 
-## Gaya kode
+## Coding Standards & Guardrails
 
-Ikuti bagian 4 dan 6 di [`AGENTS.md`](AGENTS.md). Ringkasnya: tanpa `unwrap()` di produksi, `tracing` bukan `println!`, tidak ada kebocoran kredensial di log, dan jaga dependensi tetap ramping.
+- **Zero-OpenSSL / Static `musl`:** Always use `rustls` (never `openssl` or `native-tls`) and keep `rusqlite` on the `bundled` feature.
+- **No `unsafe` by default:** `#![forbid(unsafe_code)]` is enforced across the workspace.
+- **No `.unwrap()` / `.expect()` in production code:** Propagate or handle errors explicitly (`thiserror` in library crates, `anyhow` at the `cli` / `daemon` boundary). Enforced by workspace Clippy lints.
+- **Tokio & PTY safety:**
+  - Never hold a `std::sync::Mutex` or `RwLock` guard across an `.await` point.
+  - Keep blocking `rusqlite` calls off Tokio worker threads (use the `latch-store` single-writer actor thread).
+  - Keep blocking `portable-pty` reads on dedicated OS threads with 8–16 ms output batching and process-group teardown via `killpg`.
+- **No credential leaks:** Never log `Authorization` headers, API keys, or full prompts. Route logs and audit messages through `latch_core::redact::redact`.
+- **Performance budgets:**
+  - Idle daemon RSS ≤ 25 MB
+  - Per active PTY session overhead ≤ 5 MB
+  - Static `musl` release binary < 30 MB
 
-## Pesan commit
+## Commit Messages
 
-[Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`. Scope = nama crate, misalnya `feat(dag): add retry gate`.
+Follow [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`.
 
-## Templat Pull Request
+Examples:
+- `feat(cli): add /new slash command for parallel sessions`
+- `fix(git-engine): handle renamed files in paginated diff`
+
+## Pull Request Template
 
 ```markdown
-## Ringkasan
-<apa dan kenapa>
+## Summary
+<what changed and why>
 
-## Requirement terkait
-FR-xx / NFR-xx / T-xx
+## How to Test
+<commands or reproduction steps>
 
-## Cara uji
-<perintah / langkah>
-
-## Dampak performa & ukuran
-RSS idle: ... MB | ukuran binary: ... MB | catatan: ...
+## Performance & Size Impact
+Idle RSS: ... MB | Binary size: ... MB | Notes: ...
 
 ## Checklist
-- [ ] fmt, clippy, tes lolos
-- [ ] Dokumen diperbarui
-- [ ] CHANGELOG diperbarui
-- [ ] Tidak ada rahasia/log sensitif
+- [ ] `cargo fmt --all -- --check` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [ ] `cargo test --workspace` / `cargo nextest run --workspace` passes
+- [ ] `README.md` / `CHANGELOG.md` updated if applicable
+- [ ] No secrets, API keys, or sensitive logs committed
 ```
 
-## Melaporkan celah keamanan
+## Security Disclosures
 
-Jangan membuka issue publik. Kirim laporan privat ke kontak keamanan yang tercantum di `docs/SECURITY.md` (bagian *Pelaporan kerentanan*).
+Please do **not** open public GitHub issues for security vulnerabilities. Use GitHub's private vulnerability reporting on the repository so the issue can be investigated and patched before disclosure.
 
-## Kode etik
+## Code of Conduct
 
-Bersikap sopan dan konstruktif. Kritik kode, bukan orangnya.
+Be respectful, constructive, and welcoming. Critique code, not people.
