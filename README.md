@@ -2,7 +2,7 @@
   <img src="assets/icon.png" alt="Latch Logo" width="128" />
 </p>
 
-<h1 align="center">Latch Runtime CLI</h1>
+<h1 align="center">Latch CLI</h1>
 
 <p align="center">
   <strong>Autonomous Rust Agent Runtime CLI</strong> — a 100% Rust AI coding agent orchestrator packed into a single static binary, installable via <code>npx</code> / <code>npm</code>.<br/>
@@ -10,10 +10,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/fadiljee/latch-cli/actions/workflows/ci.yml">
+    <img src="https://github.com/fadiljee/latch-cli/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  </a>
   <img src="https://img.shields.io/badge/status-v0.1.0--dev-orange" alt="status" />
   <img src="https://img.shields.io/badge/rust-stable%20(edition%202024)-blue" alt="rust" />
-  <img src="https://img.shields.io/badge/cli-latch--cli-blueviolet" alt="cli" />
-  <img src="https://img.shields.io/badge/idle%20RAM-~10.5%20MB-brightgreen" alt="idle ram" />
+  <img src="https://img.shields.io/badge/binary-4.3%20MB-brightgreen" alt="binary size" />
+  <img src="https://img.shields.io/badge/idle%20RAM-~10.3%20MB-brightgreen" alt="idle ram" />
 </p>
 
 ---
@@ -32,12 +35,20 @@ Running multiple AI coding agent CLIs (`claude`, `codex`, `opencode`, `gemini`, 
 
 ## Features (`v0.1`)
 
-- **Single Binary CLI (`latch-cli` & `latchd` alias)** — daemon mode and one-shot CLI client in one executable (named `latch-cli` to avoid conflicts with unrelated desktop apps named `latch`).
+- **Single Binary CLI (`latch-cli` & `latchd` alias)** — daemon mode and one-shot CLI client in one executable.
 - **Install & Run via `npx` / `npm`** — zero-dependency Node.js wrapper fetches prebuilt static binaries from GitHub Releases (or falls back to building locally with Cargo).
 - **Persistent State (SQLite WAL)** — `rusqlite` (`bundled`), single-writer actor thread, automatic migrations, and startup crash reconciliation.
 - **Automatic `git worktree` Isolation** — each session gets a dedicated worktree and branch (`latch/<project>/<short-id>`), paginated diffs, conflict simulation (`git merge-tree --write-tree`), and idempotent squash/merge or discard.
 - **Multi-Session PTY Pool** — `portable-pty` on dedicated OS threads, 12 ms output batching, 1 MiB ring buffer, rolling logs, `vt100` screen snapshots, interactive attach (`Ctrl-]`), and process-group control (`SIGSTOP`/`SIGCONT`/`SIGTERM`→`SIGKILL`).
 - **Security & Privacy Foundations** — `0600` Unix Domain Socket with `SO_PEERCRED` UID verification, automatic secret/API-key redaction in logs and audit records, and a zero-OpenSSL dependency tree (`rustls` + `rusqlite bundled`).
+
+### Measured Performance (`v0.1` release)
+
+| Metric | Measured | Budget |
+| :--- | ---: | ---: |
+| Idle daemon RSS | **~10.3 MB** (10,552 kB) | ≤ 25 MB |
+| Overhead per active PTY session | **~316 KB** | ≤ 5 MB |
+| Release binary size | **4.3 MB** | < 30 MB |
 
 ---
 
@@ -45,7 +56,7 @@ Running multiple AI coding agent CLIs (`claude`, `codex`, `opencode`, `gemini`, 
 
 | Platform | Status (`v0.1`) | Notes |
 | :--- | :--- | :--- |
-| **Linux (x86_64)** | Supported | Primary target; static `musl` binary; Landlock sandbox planned for `v0.3` |
+| **Linux (x86_64)** | Supported | Primary target; static `musl` binary verified in CI; Landlock sandbox planned for `v0.3` |
 | **macOS** | Partial / Experimental | Shares Unix socket & POSIX process-group foundations |
 | **Windows** | WSL2 only | Native Windows support is not yet implemented |
 
@@ -56,15 +67,13 @@ Running multiple AI coding agent CLIs (`claude`, `codex`, `opencode`, `gemini`, 
 ### Via `npx` / `npm`
 
 ```bash
-# Run directly via npx (once published to npm)
-npx latch-runtime --help
+# Run directly from GitHub
+npx github:fadiljee/latch-cli --help
 
-# Or install globally via npm
+# Or via npm registry (once published)
+npx latch-runtime --help
 npm install -g latch-runtime
 latch-cli --help
-
-# Or run directly from GitHub
-npx github:fadiljee/latch-cli --help
 ```
 
 ### Build from Source (Rust)
@@ -150,7 +159,7 @@ Pass `--json` to any command for machine-readable output.
 ## Workspace Structure
 
 ```text
-latch-runtime/
+latch-cli/
 ├── Cargo.toml              # Rust workspace root & shared dependencies
 ├── package.json            # npm wrapper package (`latch-runtime`)
 ├── bin/latch-cli.js        # npx / npm binary shim
@@ -177,6 +186,15 @@ latch-runtime/
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace
 ./scripts/bench-rss.sh
 ```
+
+---
+
+## Roadmap
+
+- **v0.1 (Done):** UDS daemon, SQLite WAL, `git worktree` + diff/merge, PTY pool, single-binary CLI (`latch-cli`), `npx`/`npm` wrapper, static `musl` CI.
+- **v0.2:** Local LLM reverse proxy (real-time token/cost tracking, circuit breaker), embedded Web PWA (`rust-embed`), notifications, remote tunnel.
+- **v0.3:** Landlock OS sandbox (`pre_exec`), sensitive path denylist, Approval Gate.
+- **v1.0:** `workflow.toml` DAG pipelines, auto-retry gate, multi-model fan-out arena, idle session hibernation.
