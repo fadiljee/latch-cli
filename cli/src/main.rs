@@ -1,5 +1,8 @@
 #![allow(clippy::print_stdout)]
 
+mod repl;
+mod ui;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -31,7 +34,7 @@ struct Cli {
     json: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -196,7 +199,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        return repl::run();
+    };
+    match command {
         Commands::Daemon { action } => match action {
             DaemonCmd::Start { foreground } => {
                 if foreground {
@@ -284,14 +290,14 @@ fn spawn_daemon_background(quiet: bool) -> anyhow::Result<()> {
     )
 }
 
-fn ensure_daemon_running(paths: &Paths) -> anyhow::Result<()> {
+pub(crate) fn ensure_daemon_running(paths: &Paths) -> anyhow::Result<()> {
     if paths.socket_path.exists() && UnixStream::connect(&paths.socket_path).is_ok() {
         return Ok(());
     }
     spawn_daemon_background(true)
 }
 
-fn command_in_path(cmd: &str) -> bool {
+pub(crate) fn command_in_path(cmd: &str) -> bool {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(cmd);
@@ -302,7 +308,7 @@ fn command_in_path(cmd: &str) -> bool {
     false
 }
 
-fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
+pub(crate) fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     let agents = load_effective_agents(&paths.agents_file())?;
     let rows: Vec<Value> = agents
@@ -352,7 +358,7 @@ fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_login(agent: &str) -> anyhow::Result<()> {
+pub(crate) fn cmd_login(agent: &str) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     let agents = load_effective_agents(&paths.agents_file())?;
     let profile = agents.profiles.get(agent).ok_or_else(|| {
@@ -402,7 +408,7 @@ fn cmd_login(agent: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_init(force: bool) -> anyhow::Result<()> {
+pub(crate) fn cmd_init(force: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     std::fs::create_dir_all(&paths.config_dir)?;
     let target = paths.agents_file();
@@ -449,7 +455,7 @@ fn cmd_daemon_stop(json_out: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_daemon_status(json_out: bool) -> anyhow::Result<()> {
+pub(crate) fn cmd_daemon_status(json_out: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     let mut client = Client::connect(&paths.socket_path)?;
     let res: Value = client.call("daemon.status", json!({}))?;
@@ -559,7 +565,7 @@ fn cmd_run(args: RunArgs, json_out: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_or_register_cwd_project(client: &mut Client) -> anyhow::Result<String> {
+pub(crate) fn resolve_or_register_cwd_project(client: &mut Client) -> anyhow::Result<String> {
     let out = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()?;
@@ -722,7 +728,7 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn attach_interactive(socket_path: &Path, id: &str) -> anyhow::Result<()> {
+pub(crate) fn attach_interactive(socket_path: &Path, id: &str) -> anyhow::Result<()> {
     let client = Client::connect(socket_path)?;
     let stream = client.attach(id)?;
 
