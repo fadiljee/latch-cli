@@ -1,0 +1,54 @@
+# Build & dependency artifacts
+/target
+**/*.rs.bk
+web/node_modules
+web/dist
+
+# Runtime state, SQLite, sockets & logs
+*.db
+*.db-shm
+*.db-wal
+*.sock
+*.log
+*.log.*
+
+# Credentials, secrets & API keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*secret*
+*credential*
+*apikey*
+*api_key*
+*api-key*
+token
+.token
+id_rsa*
+id_ed25519*
+.netrc
+config.local.toml
+agents.local.toml
+
+# Local AI agent rules, skills & internal docs/PRD
+.agent/
+.agents/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+skills-lock.json
+PRD/
+docs/
+
+# Raw uncropped assets & OS/editor files
+assets/icon-no-rm-bg.png
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

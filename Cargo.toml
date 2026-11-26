@@ -1,0 +1,74 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/*",
+    "cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "UNLICENSED"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[workspace.dependencies]
+latch-core = { path = "crates/core" }
+latch-store = { path = "crates/store" }
+latch-git = { path = "crates/git-engine" }
+latch-pty = { path = "crates/pty-pool" }
+latch-sandbox = { path = "crates/sandbox" }
+latch-proxy = { path = "crates/proxy" }
+latch-dag = { path = "crates/dag" }
+latch-daemon = { path = "crates/daemon" }
+latch-tui = { path = "crates/tui" }
+
+tokio = { version = "1.47", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "process",
+    "signal",
+    "sync",
+    "time",
+    "fs",
+] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+toml = { version = "0.8" }
+thiserror = "2.0"
+anyhow = "1.0"
+uuid = { version = "1.18", default-features = false, features = ["v7", "serde", "std"] }
+rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
+clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
+tracing-appender = "0.2"
+portable-pty = "0.9"
+vt100 = "0.16.2"
+nix = { version = "0.30", default-features = false, features = ["signal", "process", "user", "fs"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
+tui-term = "0.3.4"
+regex = { version = "1.11", default-features = false, features = ["std", "perf"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+
+tempfile = "3.20"
+proptest = "1.7"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
+opt-level = "s"
+# Pertahankan panic = "unwind" agar panic di satu task sesi tidak menjatuhkan seluruh daemon (NFR-06).
+panic = "unwind"

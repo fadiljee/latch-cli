@@ -1,0 +1,2 @@
+[target.x86_64-unknown-linux-musl]
+# Build statis murni tanpa linker eksternal khusus

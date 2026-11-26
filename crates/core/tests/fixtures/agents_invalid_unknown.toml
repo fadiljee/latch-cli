@@ -1,0 +1,4 @@
+[profiles.bad]
+command = "sh"
+args = []
+bogus_field = true

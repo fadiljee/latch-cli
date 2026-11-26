@@ -1,0 +1,13 @@
+[profiles.coder-claude]
+command = "claude"
+args = []
+proxy_mode = "injected"
+proxy_provider = "anthropic"
+pass_env = ["ANTHROPIC_API_KEY"]
+extra_rw = ["~/.claude"]
+resume_args = ["--continue"]
+
+[profiles.sleeper]
+command = "sh"
+args = ["-c", "sleep 3600"]
+proxy_mode = "bypass"

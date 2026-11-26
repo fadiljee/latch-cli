@@ -1,0 +1,21 @@
+[package]
+name = "latch-pty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+latch-core.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
+nix.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
