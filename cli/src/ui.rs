@@ -159,16 +159,30 @@ pub fn print_mono_diff(patch: &str) {
 }
 
 pub const SLASH_MENU: &[(&str, &str)] = &[
-    ("/login", "Choose OAuth account login for any agent"),
+    (
+        "/login",
+        "OAuth sign-in (OpenRouter / GitHub / CLI) or API key",
+    ),
+    ("/auth", "Show saved OAuth & API key authentication status"),
+    ("/logout", "Remove saved OAuth or API key credentials"),
     (
         "/agent",
-        "Choose or switch the active coding agent (incl. built-in latch)",
+        "Choose or switch active agent (native `latch` or external CLI)",
     ),
     (
         "/mode",
-        "Switch execution mode (confirm, accept-edits, auto, plan)",
+        "Switch execution mode (confirm, accept-edits, auto, plan) or press Tab",
     ),
-    ("/model", "View or change model for built-in latch agent"),
+    (
+        "/model",
+        "Choose or change LLM model for native `latch` agent",
+    ),
+    (
+        "/compact",
+        "Summarize & compact conversation context window",
+    ),
+    ("/undo", "Revert uncommitted changes in the active worktree"),
+    ("/cost", "Show token usage for the current native session"),
     ("/new", "Open a new isolated worktree session"),
     ("/run", "Run a specific agent in a background PTY worktree"),
     ("/sessions", "List all active and completed sessions"),
@@ -207,6 +221,7 @@ pub fn print_help() {
 
 pub enum PromptResult {
     Line(String),
+    CycleMode,
     Clear,
     Eof,
 }
@@ -491,6 +506,10 @@ pub fn read_prompt(
                         cursor = buf.len();
                         menu_idx = 0;
                         menu_dismissed = false;
+                    } else if buf.is_empty() {
+                        // Gaya OpenCode: tekan Tab saat input kosong untuk mengganti mode eksekusi.
+                        clear_below_and_finish(&mut stdout)?;
+                        return Ok(PromptResult::CycleMode);
                     }
                 }
                 (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {

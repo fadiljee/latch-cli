@@ -1,6 +1,7 @@
 #![allow(clippy::print_stdout)]
 
 mod agent;
+mod auth;
 mod repl;
 mod ui;
 
@@ -399,7 +400,37 @@ pub(crate) fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
 
 pub(crate) fn cmd_login_interactive() -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
+    let store = auth::AuthStore::load(&paths);
     let agents = load_effective_agents(&paths.agents_file())?;
+
+    let or_status = if store.entries.contains_key("openrouter") {
+        "connected"
+    } else {
+        "native OAuth"
+    };
+    let gh_status = if store.entries.contains_key("github") {
+        "connected"
+    } else {
+        "native OAuth"
+    };
+
+    let mut items: Vec<(String, String)> = vec![
+        (
+            "openrouter".to_string(),
+            format!(
+                "OpenRouter — Browser OAuth PKCE (Claude/GPT/Gemini/Qwen, no API key) [{or_status}]"
+            ),
+        ),
+        (
+            "github".to_string(),
+            format!("GitHub Models — GitHub account OAuth (`gh`, free tier) [{gh_status}]"),
+        ),
+        (
+            "api-key".to_string(),
+            "API Key (Optional) — Save Anthropic/OpenAI/Gemini/OpenRouter key (0600)".to_string(),
+        ),
+    ];
+
     let oauth_providers: &[(&str, &str)] = &[
         (
             "antigravity",
@@ -443,7 +474,6 @@ pub(crate) fn cmd_login_interactive() -> anyhow::Result<()> {
         ("qwen", "Qwen Code — Account OAuth (`qwen`)"),
     ];
 
-    let mut items: Vec<(String, String)> = Vec::new();
     for &(name, desc) in oauth_providers {
         if let Some(prof) = agents.profiles.get(name) {
             let status = if command_in_path(&prof.command) {
@@ -464,10 +494,17 @@ pub(crate) fn cmd_login_interactive() -> anyhow::Result<()> {
 
 pub(crate) fn cmd_login(agent: &str) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
+    match agent {
+        "openrouter" => return auth::login_openrouter_pkce(&paths),
+        "github" => return auth::login_github_models(&paths),
+        "api-key" | "apikey" => return auth::login_api_key_interactive(&paths),
+        _ => {}
+    }
+
     let agents = load_effective_agents(&paths.agents_file())?;
     let profile = agents.profiles.get(agent).ok_or_else(|| {
         anyhow::anyhow!(
-            "unknown agent profile '{agent}'. Run `latch-cli agents` to see available profiles."
+            "unknown agent profile '{agent}'. Run `latch-cli agents` to see available profiles, or use `openrouter`, `github`, or `api-key`."
         )
     })?;
 

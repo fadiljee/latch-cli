@@ -1,6 +1,8 @@
 #![allow(clippy::print_stdout)]
 
+use crate::auth::AuthStore;
 use crate::ui;
+use latch_core::config::Paths;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Write};
@@ -40,14 +42,24 @@ impl ExecMode {
             _ => None,
         }
     }
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Confirm => Self::AcceptEdits,
+            Self::AcceptEdits => Self::Auto,
+            Self::Auto => Self::Plan,
+            Self::Plan => Self::Confirm,
+        }
+    }
 }
 
 /// Penyedia LLM untuk native agent bawaan Latch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
+    OpenRouter,
+    GitHub,
     Anthropic,
     OpenAi,
-    OpenRouter,
     Gemini,
 }
 
@@ -55,9 +67,10 @@ impl Provider {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::OpenRouter => "openrouter",
+            Self::GitHub => "github",
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
-            Self::OpenRouter => "openrouter",
             Self::Gemini => "gemini",
         }
     }
@@ -65,9 +78,10 @@ impl Provider {
     #[must_use]
     pub const fn default_model(self) -> &'static str {
         match self {
+            Self::OpenRouter => "anthropic/claude-sonnet-4",
+            Self::GitHub => "gpt-4o",
             Self::Anthropic => "claude-sonnet-4-20250514",
             Self::OpenAi => "gpt-4o",
-            Self::OpenRouter => "anthropic/claude-sonnet-4",
             Self::Gemini => "gemini-2.5-pro",
         }
     }
@@ -76,18 +90,58 @@ impl Provider {
 #[derive(Debug, Clone)]
 pub struct ProviderAuth {
     pub provider: Provider,
+    pub auth_kind: &'static str,
     pub api_key: String,
     pub base_url: Option<String>,
 }
 
-/// Mendeteksi provider LLM aktif dari environment variable API key.
+/// Mendeteksi kredensial LLM aktif: prioritas Native OAuth (`auth.json`), lalu API key tersimpan, lalu env var.
 #[must_use]
-pub fn detect_provider() -> Option<ProviderAuth> {
+pub fn detect_provider(paths: &Paths) -> Option<ProviderAuth> {
+    let store = AuthStore::load(paths);
+
+    // 1. Prioritas Native OAuth tersimpan di auth.json
+    let order = [
+        ("openrouter", Provider::OpenRouter),
+        ("github", Provider::GitHub),
+        ("anthropic", Provider::Anthropic),
+        ("openai", Provider::OpenAi),
+        ("gemini", Provider::Gemini),
+    ];
+    for (key, prov) in order {
+        if let Some(entry) = store.entries.get(key)
+            && !entry.token.trim().is_empty()
+        {
+            return Some(ProviderAuth {
+                provider: prov,
+                auth_kind: if entry.kind == "oauth" {
+                    "oauth"
+                } else {
+                    "api_key"
+                },
+                api_key: entry.token.clone(),
+                base_url: entry.base_url.clone(),
+            });
+        }
+    }
+
+    // 2. Fallback environment variable
+    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+        && !key.trim().is_empty()
+    {
+        return Some(ProviderAuth {
+            provider: Provider::OpenRouter,
+            auth_kind: "env",
+            api_key: key,
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+        });
+    }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
         && !key.trim().is_empty()
     {
         return Some(ProviderAuth {
             provider: Provider::Anthropic,
+            auth_kind: "env",
             api_key: key,
             base_url: std::env::var("ANTHROPIC_BASE_URL").ok(),
         });
@@ -97,6 +151,7 @@ pub fn detect_provider() -> Option<ProviderAuth> {
     {
         return Some(ProviderAuth {
             provider: Provider::OpenAi,
+            auth_kind: "env",
             api_key: key,
             base_url: std::env::var("OPENAI_BASE_URL").ok(),
         });
@@ -106,17 +161,19 @@ pub fn detect_provider() -> Option<ProviderAuth> {
     {
         return Some(ProviderAuth {
             provider: Provider::Gemini,
+            auth_kind: "env",
             api_key: key,
             base_url: None,
         });
     }
-    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+    if let Ok(key) = std::env::var("GITHUB_TOKEN")
         && !key.trim().is_empty()
     {
         return Some(ProviderAuth {
-            provider: Provider::OpenRouter,
+            provider: Provider::GitHub,
+            auth_kind: "env",
             api_key: key,
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            base_url: Some("https://models.inference.ai.azure.com".to_string()),
         });
     }
     None
@@ -128,17 +185,115 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-/// State percakapan multi-turn untuk native agent Latch.
+/// State percakapan multi-turn dan pelacakan token untuk native agent Latch.
 #[derive(Debug, Default)]
 pub struct NativeAgentState {
     pub model_override: Option<String>,
     pub messages: Vec<ChatMessage>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub turns: u64,
 }
 
 impl NativeAgentState {
     pub fn reset(&mut self) {
         self.messages.clear();
+        self.prompt_tokens = 0;
+        self.completion_tokens = 0;
+        self.turns = 0;
     }
+}
+
+/// Menyisipkan isi file yang direferensikan dengan `@path/to/file` ke dalam prompt (gaya OpenCode/Antigravity).
+#[must_use]
+pub fn expand_file_mentions(workdir: &Path, prompt: &str) -> (String, Vec<String>) {
+    let mut attached = Vec::new();
+    let mut context_blocks = String::new();
+
+    for token in prompt.split_whitespace() {
+        let Some(raw) = token.strip_prefix('@') else {
+            continue;
+        };
+        let clean =
+            raw.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | ')' | ']' | '"'));
+        if clean.is_empty() {
+            continue;
+        }
+        if let Ok(path) = resolve_scoped_path(workdir, clean)
+            && path.is_file()
+            && let Ok(content) = fs::read_to_string(&path)
+        {
+            let clipped = truncate_str(&content, 12 * 1024);
+            attached.push(clean.to_string());
+            context_blocks.push_str(&format!("\n<file path=\"{clean}\">\n{clipped}\n</file>\n"));
+        }
+    }
+
+    if attached.is_empty() {
+        (prompt.to_string(), attached)
+    } else {
+        (
+            format!("{prompt}\n\nAttached workspace files:{context_blocks}"),
+            attached,
+        )
+    }
+}
+
+/// Memadatkan riwayat percakapan untuk menghemat context window (`/compact`).
+pub fn compact_history(paths: &Paths, state: &mut NativeAgentState) -> anyhow::Result<()> {
+    if state.messages.len() <= 2 {
+        ui::print_info("Conversation is already compact.");
+        return Ok(());
+    }
+    let auth = detect_provider(paths)
+        .ok_or_else(|| anyhow::anyhow!("No active provider credentials for `/compact`."))?;
+    let model = state
+        .model_override
+        .clone()
+        .unwrap_or_else(|| auth.provider.default_model().to_string());
+
+    let mut transcript = String::new();
+    for m in &state.messages {
+        transcript.push_str(&format!("[{}]: {}\n", m.role, m.content));
+    }
+    let summary_req = vec![ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "Summarize this coding session concisely (goals, files changed, decisions, remaining tasks):\n\n{}",
+            truncate_str(&transcript, 16 * 1024)
+        ),
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("latch-cli/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let (turn, usage) = rt.block_on(call_llm(
+        &client,
+        &auth,
+        &model,
+        "You are a concise technical summarizer.",
+        &summary_req,
+        &[],
+    ))?;
+    state.prompt_tokens += usage.0;
+    state.completion_tokens += usage.1;
+
+    let summary = match turn {
+        LlmTurn::Text(t) => t,
+        LlmTurn::Tools { text, .. } => text.unwrap_or_default(),
+    };
+    let old_len = state.messages.len();
+    state.messages = vec![ChatMessage {
+        role: "assistant".to_string(),
+        content: format!("Compacted session context:\n{summary}"),
+    }];
+    ui::print_ok(&format!(
+        "Compacted {old_len} messages into 1 summary message."
+    ));
+    Ok(())
 }
 
 struct ToolCall {
@@ -157,14 +312,15 @@ enum LlmTurn {
 
 /// Menjalankan satu giliran (multi-step tool loop) native Rust agent di dalam `workdir`.
 pub fn run_native_turn(
+    paths: &Paths,
     state: &mut NativeAgentState,
     workdir: &Path,
     mode: ExecMode,
     user_prompt: &str,
 ) -> anyhow::Result<()> {
-    let auth = detect_provider().ok_or_else(|| {
+    let auth = detect_provider(paths).ok_or_else(|| {
         anyhow::anyhow!(
-            "No LLM API key found for built-in `latch` agent.\n  Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY — or switch to an OAuth CLI agent via `/agent` (e.g. antigravity, codex, opencode)."
+            "Not signed in yet for built-in `latch` agent.\n  Run `/login` to sign in via OAuth (OpenRouter / GitHub) or enter an API key — or switch to an installed CLI agent via `/agent`."
         )
     })?;
 
@@ -173,16 +329,22 @@ pub fn run_native_turn(
         .clone()
         .unwrap_or_else(|| auth.provider.default_model().to_string());
 
+    let (expanded_prompt, attached_files) = expand_file_mentions(workdir, user_prompt);
+    if !attached_files.is_empty() {
+        ui::print_info(&format!("attached context: {}", attached_files.join(", ")));
+    }
+
     ui::print_info(&format!(
-        "latch native agent · {} ({}) · mode: {}",
+        "latch · {} ({}) · auth: {} · mode: {}",
         auth.provider.as_str(),
         model,
+        auth.auth_kind,
         mode.as_str()
     ));
 
     state.messages.push(ChatMessage {
         role: "user".to_string(),
-        content: user_prompt.to_string(),
+        content: expanded_prompt,
     });
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -203,7 +365,7 @@ pub fn run_native_turn(
     let mut tool_history: Vec<(ToolCall, String)> = Vec::new();
 
     for _step in 0..MAX_TOOL_TURNS {
-        let turn = rt.block_on(call_llm(
+        let (turn, (pt, ct)) = rt.block_on(call_llm(
             &client,
             &auth,
             &model,
@@ -211,6 +373,9 @@ pub fn run_native_turn(
             &state.messages,
             &tool_history,
         ))?;
+        state.prompt_tokens += pt;
+        state.completion_tokens += ct;
+        state.turns += 1;
 
         match turn {
             LlmTurn::Text(reply) => {
@@ -252,12 +417,12 @@ async fn call_llm(
     system: &str,
     messages: &[ChatMessage],
     tool_history: &[(ToolCall, String)],
-) -> anyhow::Result<LlmTurn> {
+) -> anyhow::Result<(LlmTurn, (u64, u64))> {
     match auth.provider {
         Provider::Anthropic => {
             call_anthropic(client, auth, model, system, messages, tool_history).await
         }
-        Provider::OpenAi | Provider::OpenRouter => {
+        Provider::OpenAi | Provider::OpenRouter | Provider::GitHub => {
             call_openai_compat(client, auth, model, system, messages, tool_history).await
         }
         Provider::Gemini => call_gemini(client, auth, model, system, messages, tool_history).await,
@@ -374,7 +539,7 @@ async fn call_openai_compat(
     system: &str,
     messages: &[ChatMessage],
     tool_history: &[(ToolCall, String)],
-) -> anyhow::Result<LlmTurn> {
+) -> anyhow::Result<(LlmTurn, (u64, u64))> {
     let base = auth
         .base_url
         .as_deref()
@@ -424,6 +589,10 @@ async fn call_openai_compat(
         anyhow::bail!("LLM API error ({status}): {val}");
     }
 
+    let usage = (
+        val["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
+        val["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+    );
     let msg = &val["choices"][0]["message"];
     let text = msg["content"].as_str().map(ToString::to_string);
     if let Some(tcs) = msg["tool_calls"].as_array()
@@ -437,10 +606,10 @@ async fn call_openai_compat(
             let args: Value = serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
             calls.push(ToolCall { id, name, args });
         }
-        return Ok(LlmTurn::Tools { text, calls });
+        return Ok((LlmTurn::Tools { text, calls }, usage));
     }
 
-    Ok(LlmTurn::Text(text.unwrap_or_default()))
+    Ok((LlmTurn::Text(text.unwrap_or_default()), usage))
 }
 
 async fn call_anthropic(
@@ -450,7 +619,7 @@ async fn call_anthropic(
     system: &str,
     messages: &[ChatMessage],
     tool_history: &[(ToolCall, String)],
-) -> anyhow::Result<LlmTurn> {
+) -> anyhow::Result<(LlmTurn, (u64, u64))> {
     let base = auth
         .base_url
         .as_deref()
@@ -525,18 +694,25 @@ async fn call_anthropic(
         }
     }
 
+    let usage = (
+        val["usage"]["input_tokens"].as_u64().unwrap_or(0),
+        val["usage"]["output_tokens"].as_u64().unwrap_or(0),
+    );
     let combined = texts.join("\n");
     if !calls.is_empty() {
-        Ok(LlmTurn::Tools {
-            text: if combined.is_empty() {
-                None
-            } else {
-                Some(combined)
+        Ok((
+            LlmTurn::Tools {
+                text: if combined.is_empty() {
+                    None
+                } else {
+                    Some(combined)
+                },
+                calls,
             },
-            calls,
-        })
+            usage,
+        ))
     } else {
-        Ok(LlmTurn::Text(combined))
+        Ok((LlmTurn::Text(combined), usage))
     }
 }
 
@@ -547,7 +723,7 @@ async fn call_gemini(
     system: &str,
     messages: &[ChatMessage],
     tool_history: &[(ToolCall, String)],
-) -> anyhow::Result<LlmTurn> {
+) -> anyhow::Result<(LlmTurn, (u64, u64))> {
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
@@ -630,18 +806,29 @@ async fn call_gemini(
         }
     }
 
+    let usage = (
+        val["usageMetadata"]["promptTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+        val["usageMetadata"]["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+    );
     let combined = texts.join("\n");
     if !calls.is_empty() {
-        Ok(LlmTurn::Tools {
-            text: if combined.is_empty() {
-                None
-            } else {
-                Some(combined)
+        Ok((
+            LlmTurn::Tools {
+                text: if combined.is_empty() {
+                    None
+                } else {
+                    Some(combined)
+                },
+                calls,
             },
-            calls,
-        })
+            usage,
+        ))
     } else {
-        Ok(LlmTurn::Text(combined))
+        Ok((LlmTurn::Text(combined), usage))
     }
 }
 

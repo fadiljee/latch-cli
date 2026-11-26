@@ -82,26 +82,35 @@ npm install -g latch-runtime
 latch-cli
 ```
 
-### 2. Sign in with your account (recommended)
+### 2. Sign in with OAuth (no API key required)
 
-No API key required if you already have a subscription account (Claude Pro/Max, ChatGPT Plus/Pro, Google, OpenCode, etc.):
+Latch is **OAuth-first** — sign in directly through your browser or existing subscription account:
 
 ```bash
-latch-cli login claude     # Claude Code account login (OAuth)
-latch-cli login codex      # OpenAI Codex account login
-latch-cli login gemini     # Google / Gemini CLI login
-latch-cli login opencode   # OpenCode account login
+# Native OAuth inside Latch (direct coding agent, no external CLI needed)
+latch-cli login openrouter   # Browser OAuth PKCE (Claude / GPT / Gemini / Qwen / DeepSeek)
+latch-cli login github       # GitHub account OAuth via `gh` (GitHub Models)
+
+# Subscription OAuth Bridge (uses your installed CLI's account login)
+latch-cli login antigravity  # Antigravity CLI — Google OAuth (`agy`)
+latch-cli login claude       # Claude Code — Anthropic OAuth
+latch-cli login codex        # OpenAI Codex — ChatGPT OAuth
+latch-cli login gemini       # Gemini CLI — Google OAuth
+latch-cli login opencode     # OpenCode — Provider OAuth
+latch-cli login copilot      # GitHub Copilot CLI — GitHub OAuth
 ```
 
 <details>
 <summary>Or use an API key instead (optional)</summary>
 
-If you prefer pay-as-you-go API keys, export the environment variable for your chosen agent — Latch forwards it cleanly via `pass_env` without ever storing it in SQLite or logs:
+You can save a masked API key securely (`0600` permissions in `~/.local/state/latch/auth.json`, never logged or stored in SQLite) via `latch-cli login api-key` (or `/login` → `api-key`), or export environment variables directly:
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # for claude / opencode / aider
-export OPENAI_API_KEY="sk-..."          # for codex / opencode / aider
-export GEMINI_API_KEY="AIza..."         # for gemini / opencode / aider
+export OPENROUTER_API_KEY="sk-or-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="AIza..."
+export GITHUB_TOKEN="ghp_..."
 ```
 
 </details>
@@ -114,15 +123,20 @@ From inside any Git repository, just run:
 latch-cli
 ```
 
-Inside the interactive prompt:
-- Type any task directly to run it right inside your active worktree:
-  - **Bridge Streaming (OAuth agents):** forwards prompts directly to `antigravity`, `codex`, `claude`, `gemini`, `opencode`, `copilot`, etc. using your account login.
-  - **Built-in Native Rust Agent (`latch`):** 100% standalone agentic loop (Anthropic / OpenAI / Gemini / OpenRouter via `rustls`) with built-in workspace tools (`list_files`, `read_file`, `write_file`, `edit_file`, `search_text`, `run_command`).
+Inside the interactive prompt (combining **Antigravity CLI** + **OpenCode** workflows):
+- **Direct Coding Agent (`latch`):** 100% standalone Rust agentic loop (`rustls`, zero OpenSSL) with built-in workspace tools (`list_files`, `read_file`, `write_file`, `edit_file`, `search_text`, `run_command`), live token usage tracking, and OAuth/API-key support.
+- **Bridge Streaming (OAuth CLI agents):** forwards prompts directly to `antigravity`, `codex`, `claude`, `gemini`, `opencode`, `copilot`, etc. using your account login.
+- **`@file` Context Injection:** mention any workspace file inline (e.g., `refactor @src/main.rs`) to automatically attach its contents into the agent prompt.
+- **`Tab` Execution Mode Switcher:** press `Tab` on an empty prompt to cycle execution modes (`confirm` → `accept-edits` → `auto` → `plan`).
 - Type `/` to open the live slash-command menu (`↑`/`↓` or `PgUp`/`PgDn` to browse, `Tab` to complete, `Enter` to select):
-  - `/login` — interactive OAuth account login picker for all agents
-  - `/agent` — interactive picker to switch between any external CLI agent or built-in `latch`
+  - `/login` — interactive OAuth login picker (OpenRouter PKCE, GitHub Models, optional API key, and all CLI agents)
+  - `/auth` / `/logout` — inspect active credentials or remove stored OAuth tokens / API keys
+  - `/agent` — interactive picker to switch between built-in `latch` or any external CLI agent
   - `/mode` — switch execution mode (`confirm`, `accept-edits`, `auto`, `plan`)
-  - `/model` — view or set the LLM model for the built-in `latch` agent
+  - `/model` — interactive model picker (Claude Sonnet 4, GPT-4.1, Gemini 2.5 Pro, Qwen3 Coder, DeepSeek R1, etc.)
+  - `/compact` — summarize conversation history to free context window
+  - `/undo` — revert uncommitted worktree edits (`git checkout -- .`)
+  - `/cost` — view real-time prompt/completion token usage and turn count
   - `/new` — open another parallel worktree session
   - `/sessions` — list all active & completed sessions
   - `/attach [id]` — attach interactively to a running PTY (`Ctrl-]` to detach)

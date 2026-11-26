@@ -42,16 +42,21 @@ pub fn run() -> anyhow::Result<()> {
         "latch",
         "shell",
     ];
-    let mut active_agent = preferred
-        .iter()
-        .find(|&&name| {
-            name == "latch"
-                || agents
-                    .profiles
-                    .get(name)
-                    .is_some_and(|p| crate::command_in_path(&p.command))
-        })
-        .map_or_else(|| "latch".to_string(), |s| (*s).to_string());
+    // Prioritaskan native `latch` jika sudah login OAuth/API lokal; jika belum, pilih CLI agen terpasang.
+    let mut active_agent = if agent::detect_provider(&paths).is_some() {
+        "latch".to_string()
+    } else {
+        preferred
+            .iter()
+            .find(|&&name| {
+                name == "latch"
+                    || agents
+                        .profiles
+                        .get(name)
+                        .is_some_and(|p| crate::command_in_path(&p.command))
+            })
+            .map_or_else(|| "latch".to_string(), |s| (*s).to_string())
+    };
 
     let (workspace_name, branch_name) = detect_workspace();
 
@@ -81,7 +86,15 @@ pub fn run() -> anyhow::Result<()> {
     let mut history: Vec<String> = Vec::new();
     loop {
         let sess_short = active_session.as_ref().map(|s| s.id.short());
-        let label = format!("{} [{}]", active_agent, exec_mode.as_str());
+        let tok_suffix = if native_state.prompt_tokens + native_state.completion_tokens > 0 {
+            format!(
+                " · {} tok",
+                native_state.prompt_tokens + native_state.completion_tokens
+            )
+        } else {
+            String::new()
+        };
+        let label = format!("{} [{}]{}", active_agent, exec_mode.as_str(), tok_suffix);
         match ui::read_prompt(
             &label,
             &workspace_name,
@@ -92,6 +105,10 @@ pub fn run() -> anyhow::Result<()> {
             PromptResult::Eof => {
                 ui::print_info("Goodbye.");
                 break;
+            }
+            PromptResult::CycleMode => {
+                exec_mode = exec_mode.next();
+                ui::print_ok(&format!("Mode -> {}", exec_mode.as_str()));
             }
             PromptResult::Clear => {
                 ui::clear_screen();
@@ -304,7 +321,7 @@ fn handle_input(
     if !line.starts_with('/') {
         let workdir = active_workdir(active_session.as_ref());
         if active_agent == "latch" {
-            return agent::run_native_turn(native_state, &workdir, *exec_mode, line);
+            return agent::run_native_turn(paths, native_state, &workdir, *exec_mode, line);
         }
         return run_bridge_prompt(paths, active_agent, &workdir, *exec_mode, line);
     }
@@ -378,19 +395,91 @@ fn handle_input(
                 anyhow::bail!("invalid mode '{rest}'. Choose: confirm, accept-edits, auto, plan")
             }
         }
-        "/model" => {
+        "/model" | "/models" => {
             if rest.is_empty() {
-                let current = native_state
-                    .model_override
-                    .as_deref()
-                    .unwrap_or("(provider default)");
-                ui::print_info(&format!("Built-in `latch` model: {current}"));
-                ui::print_info(
-                    "Set with `/model <model-id>` (e.g. `/model claude-sonnet-4-20250514`, `/model gpt-4o`, `/model gemini-2.5-pro`).",
-                );
+                let models = vec![
+                    (
+                        "anthropic/claude-sonnet-4".to_string(),
+                        "OpenRouter — Claude Sonnet 4 (coding default)".to_string(),
+                    ),
+                    (
+                        "anthropic/claude-opus-4".to_string(),
+                        "OpenRouter — Claude Opus 4 (deep reasoning)".to_string(),
+                    ),
+                    (
+                        "openai/gpt-4o".to_string(),
+                        "OpenRouter — OpenAI GPT-4o".to_string(),
+                    ),
+                    (
+                        "google/gemini-2.5-pro".to_string(),
+                        "OpenRouter — Google Gemini 2.5 Pro".to_string(),
+                    ),
+                    (
+                        "deepseek/deepseek-r1".to_string(),
+                        "OpenRouter — DeepSeek R1".to_string(),
+                    ),
+                    (
+                        "qwen/qwen-2.5-coder-32b-instruct".to_string(),
+                        "OpenRouter — Qwen 2.5 Coder 32B".to_string(),
+                    ),
+                    (
+                        "gpt-4o".to_string(),
+                        "GitHub Models / OpenAI Direct — GPT-4o".to_string(),
+                    ),
+                    (
+                        "claude-sonnet-4-20250514".to_string(),
+                        "Anthropic Direct — Claude Sonnet 4".to_string(),
+                    ),
+                    (
+                        "gemini-2.5-pro".to_string(),
+                        "Gemini Direct — Gemini 2.5 Pro".to_string(),
+                    ),
+                ];
+                if let Some(idx) =
+                    ui::select_menu("Select Model for Native `latch` Agent", &models)?
+                {
+                    let chosen = models[idx].0.clone();
+                    native_state.model_override = Some(chosen.clone());
+                    ui::print_ok(&format!("Model set to '{chosen}'"));
+                }
             } else {
                 native_state.model_override = Some(rest.to_string());
                 ui::print_ok(&format!("Built-in `latch` model set to '{rest}'"));
+            }
+            Ok(())
+        }
+        "/auth" => {
+            crate::auth::print_auth_status(paths);
+            Ok(())
+        }
+        "/logout" => crate::auth::logout_interactive(paths),
+        "/compact" => agent::compact_history(paths, native_state),
+        "/cost" | "/tokens" => {
+            let total = native_state.prompt_tokens + native_state.completion_tokens;
+            ui::print_info(&format!(
+                "Native session usage: {} turns · {} prompt + {} completion = {} total tokens",
+                native_state.turns,
+                native_state.prompt_tokens,
+                native_state.completion_tokens,
+                total
+            ));
+            Ok(())
+        }
+        "/undo" => {
+            let workdir = active_workdir(active_session.as_ref());
+            let out = Command::new("git")
+                .args(["-C", &workdir.to_string_lossy(), "checkout", "--", "."])
+                .output()?;
+            if out.status.success() {
+                ui::print_ok(&format!(
+                    "Reverted tracked changes in {}",
+                    workdir.display()
+                ));
+            } else {
+                anyhow::bail!(
+                    "git checkout failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
             }
             Ok(())
         }
