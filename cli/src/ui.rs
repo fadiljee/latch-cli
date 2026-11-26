@@ -1,8 +1,8 @@
 #![allow(clippy::print_stdout)]
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use latch_core::model::{Session, SessionStatus};
+use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
+use latch_core::model::Session;
 use std::io::{self, Write};
 
 /// Ikon heksagonal Latch yang diturunkan langsung dari `assets/icon.png`.
@@ -20,88 +20,71 @@ pub const LATCH_ICON: [&str; 11] = [
     "        ▀▀██▄▄▀▀        ",
 ];
 
-// Palet warna ANSI truecolor terinspirasi ikon monokrom + aksen cyan/es.
+// Palet monokrom hitam-putih murni (grayscale).
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
-const CYAN: &str = "\x1b[38;2;94;234;212m";
-const BLUE: &str = "\x1b[38;2;125;211;252m";
-const GREEN: &str = "\x1b[38;2;74;222;128m";
-const YELLOW: &str = "\x1b[38;2;250;204;21m";
-const RED: &str = "\x1b[38;2;248;113;113m";
-const WHITE: &str = "\x1b[38;2;241;245;249m";
-const MUTED: &str = "\x1b[38;2;148;163;184m";
-
-/// Gradien vertikal lembut untuk ikon Latch.
-const ICON_GRADIENT: [&str; 11] = [
-    "\x1b[38;2;248;250;252m",
-    "\x1b[38;2;226;242;254m",
-    "\x1b[38;2;196;234;252m",
-    "\x1b[38;2;165;226;248m",
-    "\x1b[38;2;134;219;244m",
-    "\x1b[38;2;110;218;236m",
-    "\x1b[38;2;94;224;224m",
-    "\x1b[38;2;94;234;212m",
-    "\x1b[38;2;125;211;252m",
-    "\x1b[38;2;186;230;253m",
-    "\x1b[38;2;241;245;249m",
-];
+const WHITE: &str = "\x1b[38;2;250;250;250m";
+const SILVER: &str = "\x1b[38;2;203;213;225m";
+const GRAY: &str = "\x1b[38;2;148;163;184m";
+const DARK: &str = "\x1b[38;2;82;82;91m";
 
 pub struct WelcomeInfo<'a> {
     pub version: &'a str,
     pub workspace: &'a str,
     pub branch: &'a str,
     pub active_agent: &'a str,
-    pub agent_installed: bool,
-    pub installed_count: usize,
-    pub daemon_pid: u64,
-    pub live_sessions: u64,
+    pub session_short: Option<&'a str>,
+    pub session_branch: Option<&'a str>,
+    pub installed_agents: &'a [String],
 }
 
-/// Menampilkan layar sambutan interaktif bergaya Antigravity CLI dengan ikon Latch.
+/// Menampilkan header monokrom bergaya Antigravity CLI dengan ikon Latch.
 pub fn print_welcome(info: &WelcomeInfo<'_>) {
-    let agent_badge = if info.agent_installed {
-        format!("{GREEN}● ready{RESET}")
+    let session_line = match (info.session_short, info.session_branch) {
+        (Some(sid), Some(br)) => {
+            format!("{GRAY}Session   :{RESET} {WHITE}{sid}{RESET} {DIM}({br}){RESET}")
+        }
+        _ => format!("{GRAY}Session   :{RESET} {DIM}ready (not in a git repo){RESET}"),
+    };
+
+    let installed_str = if info.installed_agents.is_empty() {
+        "none detected on PATH".to_string()
     } else {
-        format!("{YELLOW}○ not on PATH{RESET}")
+        info.installed_agents.join(" · ")
     };
 
     let right_lines: [String; 11] = [
         String::new(),
         format!(
-            "{BOLD}{WHITE}L A T C H{RESET}  {DIM}v{}{RESET}  {CYAN}Rust Agent Runtime{RESET}",
+            "{BOLD}{WHITE}L A T C H{RESET}  {DIM}v{}{RESET}",
             info.version
         ),
-        format!("{MUTED}────────────────────────────────────────────────{RESET}"),
+        format!("{DARK}────────────────────────────────────────────────────{RESET}"),
         format!(
-            "{MUTED}Workspace :{RESET} {WHITE}{}{RESET} {BLUE}({}){RESET}",
+            "{GRAY}Workspace :{RESET} {WHITE}{}{RESET} {DIM}({}){RESET}",
             info.workspace, info.branch
         ),
         format!(
-            "{MUTED}Agent     :{RESET} {CYAN}{}{RESET} {agent_badge}  {DIM}({} installed){RESET}",
-            info.active_agent, info.installed_count
+            "{GRAY}Agents    :{RESET} {WHITE}All Agents Supported{RESET} {DIM}({installed_str}){RESET}"
         ),
         format!(
-            "{MUTED}Daemon    :{RESET} {GREEN}running{RESET} {DIM}(pid {}, {} live session(s)){RESET}",
-            info.daemon_pid, info.live_sessions
+            "{GRAY}Active    :{RESET} {BOLD}{WHITE}{}{RESET}  {DIM}(/agent to switch · /login to sign in){RESET}",
+            info.active_agent
         ),
+        session_line,
         String::new(),
         format!(
-            "{MUTED}Commands  :{RESET} {WHITE}/agent{RESET}  {WHITE}/login{RESET}  {WHITE}/run{RESET}  {WHITE}/sessions{RESET}  {WHITE}/attach{RESET}"
+            "{GRAY}Commands  :{RESET} {SILVER}/new  /agent  /login  /sessions  /attach  /diff{RESET}"
         ),
-        format!(
-            "            {WHITE}/diff{RESET}   {WHITE}/merge{RESET}  {WHITE}/discard{RESET}  {WHITE}/status{RESET}   {WHITE}/help{RESET}"
-        ),
-        format!(
-            "{DIM}Type a task to launch an isolated agent, or / for commands (Tab completes).{RESET}"
-        ),
+        format!("            {SILVER}/merge  /discard  /pause  /kill  /status  /help{RESET}"),
         String::new(),
     ];
 
     println!();
     for (idx, icon_row) in LATCH_ICON.iter().enumerate() {
-        let color = ICON_GRADIENT[idx];
-        println!("  {color}{icon_row}{RESET}    {}", right_lines[idx]);
+        let tone = if idx <= 1 || idx >= 9 { WHITE } else { SILVER };
+        println!("  {tone}{icon_row}{RESET}    {}", right_lines[idx]);
     }
     println!();
 }
@@ -112,41 +95,39 @@ pub fn clear_screen() {
 }
 
 pub fn print_ok(msg: &str) {
-    println!("  {GREEN}✓{RESET} {WHITE}{msg}{RESET}");
+    println!("  {WHITE}✓{RESET} {SILVER}{msg}{RESET}");
 }
 
 pub fn print_info(msg: &str) {
-    println!("  {CYAN}•{RESET} {MUTED}{msg}{RESET}");
+    println!("  {GRAY}•{RESET} {GRAY}{msg}{RESET}");
 }
 
 pub fn print_warn(msg: &str) {
-    println!("  {YELLOW}!{RESET} {YELLOW}{msg}{RESET}");
+    println!("  {WHITE}!{RESET} {SILVER}{msg}{RESET}");
 }
 
 pub fn print_err(msg: &str) {
-    println!("  {RED}✗{RESET} {RED}{msg}{RESET}");
+    println!("  {BOLD}{WHITE}✗{RESET} {WHITE}{msg}{RESET}");
 }
 
-pub fn print_sessions(sessions: &[Session]) {
+pub fn print_sessions(sessions: &[Session], active_id: Option<&str>) {
     if sessions.is_empty() {
-        print_info("No sessions yet. Type a task or run `/run <agent> <task>`.");
+        print_info("No sessions yet. Run `/new` or type a task.");
         return;
     }
     println!(
-        "  {DIM}{:<10} {:<14} {:<12} {:<26} TASK{RESET}",
-        "ID", "AGENT", "STATUS", "BRANCH"
+        "  {DIM}{:<2} {:<10} {:<12} {:<12} {:<26} TASK{RESET}",
+        "", "ID", "AGENT", "STATUS", "BRANCH"
     );
     for s in sessions {
-        let color = match s.status {
-            SessionStatus::Running => GREEN,
-            SessionStatus::Paused | SessionStatus::WaitingApproval => YELLOW,
-            SessionStatus::Completed => CYAN,
-            SessionStatus::Tripped | SessionStatus::Failed => RED,
-            SessionStatus::Hibernated => BLUE,
+        let marker = if active_id == Some(s.id.as_str()) {
+            "▸"
+        } else {
+            " "
         };
         let task_preview = s.task.as_deref().unwrap_or("—");
         println!(
-            "  {WHITE}{:<10}{RESET} {:<14} {color}{:<12}{RESET} {MUTED}{:<26}{RESET} {}",
+            "  {WHITE}{marker} {:<10}{RESET} {SILVER}{:<12}{RESET} {GRAY}{:<12}{RESET} {DIM}{:<26}{RESET} {SILVER}{}{RESET}",
             s.id.short(),
             s.agent_profile,
             s.status,
@@ -156,7 +137,7 @@ pub fn print_sessions(sessions: &[Session]) {
     }
 }
 
-pub fn print_colored_diff(patch: &str) {
+pub fn print_mono_diff(patch: &str) {
     if patch.trim().is_empty() {
         print_info("No diff changes in this worktree.");
         return;
@@ -164,87 +145,52 @@ pub fn print_colored_diff(patch: &str) {
     for line in patch.lines() {
         if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff --git") {
             println!("  {BOLD}{WHITE}{line}{RESET}");
-        } else if line.starts_with("@@") {
-            println!("  {CYAN}{line}{RESET}");
-        } else if line.starts_with('+') {
-            println!("  {GREEN}{line}{RESET}");
+        } else if line.starts_with("@@") || line.starts_with('+') {
+            println!("  {WHITE}{line}{RESET}");
         } else if line.starts_with('-') {
-            println!("  {RED}{line}{RESET}");
+            println!("  {DIM}{line}{RESET}");
         } else {
-            println!("  {MUTED}{line}{RESET}");
+            println!("  {GRAY}{line}{RESET}");
         }
     }
 }
 
+pub const SLASH_MENU: &[(&str, &str)] = &[
+    ("/new", "Open a new isolated worktree session"),
+    ("/agent", "List all agents or switch active agent"),
+    ("/login", "Sign in to an agent with your account (OAuth)"),
+    ("/run", "Run a specific agent on a task"),
+    ("/sessions", "List all active and completed sessions"),
+    (
+        "/attach",
+        "Attach interactively to the active/target PTY (Ctrl-])",
+    ),
+    ("/screen", "Show current terminal snapshot"),
+    ("/diff", "Show unified git diff for the session"),
+    (
+        "/merge",
+        "Check conflicts and squash-merge into default branch",
+    ),
+    ("/discard", "Delete session worktree and branch"),
+    ("/pause", "Pause session process group"),
+    ("/resume", "Resume paused session"),
+    ("/kill", "Terminate session"),
+    ("/projects", "List registered Git repositories"),
+    ("/status", "Show daemon status"),
+    ("/init", "Generate ~/.config/latch/agents.toml"),
+    ("/clear", "Clear screen and redraw header"),
+    ("/help", "Show all slash commands"),
+    ("/exit", "Exit Latch CLI"),
+];
+
 pub fn print_help() {
-    println!("  {BOLD}{WHITE}Slash Commands{RESET}");
-    let cmds = [
-        (
-            "/run [agent] <task>",
-            "Launch agent in an isolated git worktree",
-        ),
-        (
-            "/agent [name]",
-            "List agents or switch the active default agent",
-        ),
-        (
-            "/login [agent]",
-            "Sign in with your subscription account (OAuth)",
-        ),
-        ("/sessions", "List all active and completed sessions"),
-        (
-            "/attach <id>",
-            "Attach interactively to a running PTY (Ctrl-] to detach)",
-        ),
-        (
-            "/screen <id>",
-            "Show current terminal snapshot of a session",
-        ),
-        ("/diff <id>", "Show colorized git diff for a session"),
-        (
-            "/merge <id>",
-            "Check conflicts and squash-merge into default branch",
-        ),
-        ("/discard <id>", "Delete session worktree and branch"),
-        ("/pause <id>", "Pause session process group (SIGSTOP)"),
-        ("/resume <id>", "Resume paused session (SIGCONT)"),
-        ("/kill <id>", "Terminate a running session"),
-        ("/projects", "List registered Git repositories"),
-        ("/status", "Show daemon status and health"),
-        ("/init", "Generate starter ~/.config/latch/agents.toml"),
-        ("/clear", "Clear terminal and redraw Latch banner"),
-        ("/exit", "Exit Latch CLI"),
-    ];
-    for (cmd, desc) in cmds {
-        println!("    {CYAN}{cmd:<22}{RESET} {MUTED}{desc}{RESET}");
+    println!("  {BOLD}{WHITE}Commands{RESET}");
+    for (cmd, desc) in SLASH_MENU {
+        println!("    {WHITE}{cmd:<14}{RESET} {GRAY}{desc}{RESET}");
     }
     println!();
-    println!(
-        "  {DIM}Or just type any task directly to launch your active agent immediately.{RESET}"
-    );
+    println!("  {DIM}Type any prompt directly to send it to your active agent session.{RESET}");
 }
-
-pub const SLASH_COMMANDS: &[&str] = &[
-    "/run",
-    "/agent",
-    "/login",
-    "/sessions",
-    "/attach",
-    "/screen",
-    "/diff",
-    "/merge",
-    "/discard",
-    "/pause",
-    "/resume",
-    "/kill",
-    "/projects",
-    "/status",
-    "/init",
-    "/clear",
-    "/help",
-    "/exit",
-    "/quit",
-];
 
 pub enum PromptResult {
     Line(String),
@@ -260,16 +206,23 @@ impl Drop for RawGuard {
     }
 }
 
-/// Membaca satu baris perintah interaktif dengan history (Up/Down), Tab autocomplete, dan styling.
+/// Prompt input bergaya Antigravity CLI dengan border monokrom dan dropdown slash-command live.
 pub fn read_prompt(
     agent: &str,
     workspace: &str,
+    session_short: Option<&str>,
     history: &[String],
     agent_names: &[String],
 ) -> io::Result<PromptResult> {
     let mut stdout = io::stdout();
-    println!("  {MUTED}╭─{RESET} {CYAN}{agent}{RESET} {DIM}· {workspace}{RESET}");
-    let prefix = format!("  {MUTED}╰─{RESET}{BOLD}{CYAN}❯{RESET} ");
+    let width = terminal::size()
+        .map(|(w, _)| usize::from(w.saturating_sub(4)).clamp(48, 96))
+        .unwrap_or(76);
+    let rule = "─".repeat(width);
+    let sess_tag = session_short.map_or_else(String::new, |s| format!(" · session {s}"));
+
+    println!("  {DARK}┌{rule}┐{RESET}");
+    let prefix = format!("  {DARK}│{RESET} {BOLD}{WHITE}❯{RESET} ");
 
     enable_raw_mode()?;
     let _guard = RawGuard;
@@ -278,7 +231,16 @@ pub fn read_prompt(
     let mut cursor: usize = 0;
     let mut hist_idx: Option<usize> = None;
 
-    redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+    redraw_prompt(
+        &mut stdout,
+        &prefix,
+        &rule,
+        agent,
+        workspace,
+        &sess_tag,
+        &buf,
+        cursor,
+    )?;
 
     loop {
         if let Event::Key(KeyEvent {
@@ -288,30 +250,35 @@ pub fn read_prompt(
             match (code, modifiers) {
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                     if buf.is_empty() {
-                        write!(stdout, "\r\n")?;
-                        stdout.flush()?;
+                        clear_below_and_finish(&mut stdout)?;
                         return Ok(PromptResult::Eof);
                     }
                     buf.clear();
                     cursor = 0;
                     hist_idx = None;
-                    redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                    redraw_prompt(
+                        &mut stdout,
+                        &prefix,
+                        &rule,
+                        agent,
+                        workspace,
+                        &sess_tag,
+                        &buf,
+                        cursor,
+                    )?;
                 }
                 (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                     if buf.is_empty() {
-                        write!(stdout, "\r\n")?;
-                        stdout.flush()?;
+                        clear_below_and_finish(&mut stdout)?;
                         return Ok(PromptResult::Eof);
                     }
                 }
                 (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                    write!(stdout, "\r\n")?;
-                    stdout.flush()?;
+                    clear_below_and_finish(&mut stdout)?;
                     return Ok(PromptResult::Clear);
                 }
                 (KeyCode::Enter, _) => {
-                    write!(stdout, "\r\n")?;
-                    stdout.flush()?;
+                    clear_below_and_finish(&mut stdout)?;
                     return Ok(PromptResult::Line(buf));
                 }
                 (KeyCode::Backspace, _) => {
@@ -319,35 +286,89 @@ pub fn read_prompt(
                         let prev = prev_char_boundary(&buf, cursor);
                         buf.drain(prev..cursor);
                         cursor = prev;
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Delete, _) => {
                     if cursor < buf.len() {
                         let next = next_char_boundary(&buf, cursor);
                         buf.drain(cursor..next);
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Left, _) => {
                     if cursor > 0 {
                         cursor = prev_char_boundary(&buf, cursor);
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Right, _) => {
                     if cursor < buf.len() {
                         cursor = next_char_boundary(&buf, cursor);
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Home, _) => {
                     cursor = 0;
-                    redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                    redraw_prompt(
+                        &mut stdout,
+                        &prefix,
+                        &rule,
+                        agent,
+                        workspace,
+                        &sess_tag,
+                        &buf,
+                        cursor,
+                    )?;
                 }
                 (KeyCode::End, _) => {
                     cursor = buf.len();
-                    redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                    redraw_prompt(
+                        &mut stdout,
+                        &prefix,
+                        &rule,
+                        agent,
+                        workspace,
+                        &sess_tag,
+                        &buf,
+                        cursor,
+                    )?;
                 }
                 (KeyCode::Up, _) => {
                     if !history.is_empty() {
@@ -359,7 +380,16 @@ pub fn read_prompt(
                         hist_idx = Some(next_idx);
                         buf.clone_from(&history[next_idx]);
                         cursor = buf.len();
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Down, _) => {
@@ -372,20 +402,47 @@ pub fn read_prompt(
                             buf.clear();
                         }
                         cursor = buf.len();
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Tab, _) => {
                     if let Some(completed) = autocomplete(&buf, agent_names) {
                         buf = completed;
                         cursor = buf.len();
-                        redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                        redraw_prompt(
+                            &mut stdout,
+                            &prefix,
+                            &rule,
+                            agent,
+                            workspace,
+                            &sess_tag,
+                            &buf,
+                            cursor,
+                        )?;
                     }
                 }
                 (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                     buf.insert(cursor, c);
                     cursor += c.len_utf8();
-                    redraw_line(&mut stdout, &prefix, &buf, cursor)?;
+                    redraw_prompt(
+                        &mut stdout,
+                        &prefix,
+                        &rule,
+                        agent,
+                        workspace,
+                        &sess_tag,
+                        &buf,
+                        cursor,
+                    )?;
                 }
                 _ => {}
             }
@@ -393,12 +450,49 @@ pub fn read_prompt(
     }
 }
 
-fn redraw_line(stdout: &mut io::Stdout, prefix: &str, buf: &str, cursor: usize) -> io::Result<()> {
-    write!(stdout, "\r\x1b[2K{prefix}{buf}")?;
-    let tail_chars = buf[cursor..].chars().count();
-    if tail_chars > 0 {
-        write!(stdout, "\x1b[{tail_chars}D")?;
+#[allow(clippy::too_many_arguments)]
+fn redraw_prompt(
+    stdout: &mut io::Stdout,
+    prefix: &str,
+    rule: &str,
+    agent: &str,
+    workspace: &str,
+    sess_tag: &str,
+    buf: &str,
+    cursor: usize,
+) -> io::Result<()> {
+    // Baris input utama + border bawah + status bar + dropdown slash command jika mengetik `/`
+    write!(stdout, "\r\x1b[J{prefix}{WHITE}{buf}{RESET}")?;
+    write!(stdout, "\r\n  {DARK}└{rule}┘{RESET}")?;
+    write!(
+        stdout,
+        "\r\n  {DIM}{agent} · {workspace}{sess_tag} · / commands · Tab complete · Ctrl+C exit{RESET}"
+    )?;
+
+    let mut extra_lines: usize = 2;
+    let trimmed = buf.trim_start();
+    if trimmed.starts_with('/') && !trimmed.contains(' ') {
+        let matches: Vec<(&str, &str)> = SLASH_MENU
+            .iter()
+            .copied()
+            .filter(|(c, _)| c.starts_with(trimmed))
+            .take(6)
+            .collect();
+        for (cmd, desc) in matches {
+            write!(stdout, "\r\n    {WHITE}{cmd:<12}{RESET} {DIM}{desc}{RESET}")?;
+            extra_lines += 1;
+        }
     }
+
+    // Kembalikan kursor ke baris input pada posisi kolom yang tepat.
+    write!(stdout, "\x1b[{extra_lines}A\r")?;
+    let visual_col = 6 + buf[..cursor].chars().count();
+    write!(stdout, "\x1b[{visual_col}C")?;
+    stdout.flush()
+}
+
+fn clear_below_and_finish(stdout: &mut io::Stdout) -> io::Result<()> {
+    write!(stdout, "\r\n\x1b[J")?;
     stdout.flush()
 }
 
@@ -426,8 +520,9 @@ fn autocomplete(input: &str, agent_names: &[String]) -> Option<String> {
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     if parts.len() <= 1 && !trimmed.ends_with(' ') {
         let needle = parts.first().copied().unwrap_or("/");
-        let matches: Vec<&&str> = SLASH_COMMANDS
+        let matches: Vec<&str> = SLASH_MENU
             .iter()
+            .map(|(c, _)| *c)
             .filter(|c| c.starts_with(needle))
             .collect();
         if matches.len() == 1 {

@@ -8,15 +8,20 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Menjalankan antarmuka CLI interaktif bergaya Antigravity CLI dengan ikon Latch.
+/// Menjalankan antarmuka CLI interaktif monokrom bergaya Antigravity CLI dan langsung membuka sesi.
 pub fn run() -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     crate::ensure_daemon_running(&paths)?;
 
     let agents = load_effective_agents(&paths.agents_file())?;
     let agent_names: Vec<String> = agents.profiles.keys().cloned().collect();
+    let installed_agents: Vec<String> = agents
+        .profiles
+        .iter()
+        .filter(|(_, p)| crate::command_in_path(&p.command))
+        .map(|(k, _)| k.clone())
+        .collect();
 
-    // Pilih agen default pertama yang sudah terpasang di PATH.
     let preferred = [
         "claude", "codex", "gemini", "opencode", "aider", "goose", "qwen", "shell",
     ];
@@ -31,18 +36,51 @@ pub fn run() -> anyhow::Result<()> {
         .map_or_else(|| "shell".to_string(), |s| (*s).to_string());
 
     let (workspace_name, branch_name) = detect_workspace();
-    draw_banner(&paths, &active_agent, &workspace_name, &branch_name);
+
+    // Langsung buka sesi baru di worktree terisolasi saat `latch-cli` dijalankan (bila di dalam repo Git).
+    let mut active_session: Option<Session> = open_session(&paths, &active_agent, None).ok();
+
+    draw_banner(
+        &active_agent,
+        &workspace_name,
+        &branch_name,
+        active_session.as_ref(),
+        &installed_agents,
+    );
+
+    if let Some(ref sess) = active_session {
+        ui::print_ok(&format!(
+            "Session {} opened ({}) on branch {}",
+            sess.id.short(),
+            sess.agent_profile,
+            sess.branch_name
+        ));
+        println!();
+    }
 
     let mut history: Vec<String> = Vec::new();
     loop {
-        match ui::read_prompt(&active_agent, &workspace_name, &history, &agent_names)? {
+        let sess_short = active_session.as_ref().map(|s| s.id.short());
+        match ui::read_prompt(
+            &active_agent,
+            &workspace_name,
+            sess_short.as_deref(),
+            &history,
+            &agent_names,
+        )? {
             PromptResult::Eof => {
                 ui::print_info("Goodbye.");
                 break;
             }
             PromptResult::Clear => {
                 ui::clear_screen();
-                draw_banner(&paths, &active_agent, &workspace_name, &branch_name);
+                draw_banner(
+                    &active_agent,
+                    &workspace_name,
+                    &branch_name,
+                    active_session.as_ref(),
+                    &installed_agents,
+                );
             }
             PromptResult::Line(raw) => {
                 let line = raw.trim();
@@ -56,8 +94,10 @@ pub fn run() -> anyhow::Result<()> {
                     line,
                     &paths,
                     &mut active_agent,
+                    &mut active_session,
                     &workspace_name,
                     &branch_name,
+                    &installed_agents,
                 ) {
                     ui::print_err(&err.to_string());
                 }
@@ -72,36 +112,37 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn draw_banner(paths: &Paths, active_agent: &str, workspace: &str, branch: &str) {
-    let agents = load_effective_agents(&paths.agents_file()).unwrap_or_default();
-    let installed_count = agents
-        .profiles
-        .values()
-        .filter(|p| crate::command_in_path(&p.command))
-        .count();
-    let agent_installed = agents
-        .profiles
-        .get(active_agent)
-        .is_some_and(|p| crate::command_in_path(&p.command));
+fn open_session(paths: &Paths, profile: &str, task: Option<&str>) -> anyhow::Result<Session> {
+    let mut client = Client::connect(&paths.socket_path)?;
+    let project_name = crate::resolve_or_register_cwd_project(&mut client)?;
+    let sess: Session = client.call(
+        "session.create",
+        json!({
+            "project": project_name,
+            "profile": profile,
+            "task": task,
+        }),
+    )?;
+    Ok(sess)
+}
 
-    let (daemon_pid, live_sessions) = Client::connect(&paths.socket_path)
-        .and_then(|mut c| c.call::<Value>("daemon.status", json!({})))
-        .map_or((0, 0), |v| {
-            (
-                v["pid"].as_u64().unwrap_or(0),
-                v["live_sessions"].as_u64().unwrap_or(0),
-            )
-        });
-
+fn draw_banner(
+    active_agent: &str,
+    workspace: &str,
+    branch: &str,
+    active_session: Option<&Session>,
+    installed_agents: &[String],
+) {
+    let short_owned = active_session.map(|s| s.id.short());
+    let branch_owned = active_session.map(|s| s.branch_name.as_str());
     ui::print_welcome(&WelcomeInfo {
         version: env!("CARGO_PKG_VERSION"),
         workspace,
         branch,
         active_agent,
-        agent_installed,
-        installed_count,
-        daemon_pid,
-        live_sessions,
+        session_short: short_owned.as_deref(),
+        session_branch: branch_owned,
+        installed_agents,
     });
 }
 
@@ -125,20 +166,42 @@ fn detect_workspace() -> (String, String) {
     (name, branch)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_input(
     line: &str,
     paths: &Paths,
     active_agent: &mut String,
+    active_session: &mut Option<Session>,
     workspace: &str,
     branch: &str,
+    installed_agents: &[String],
 ) -> anyhow::Result<()> {
     if !line.starts_with('/') {
-        return launch_and_attach(paths, active_agent, line);
+        let sess = open_session(paths, active_agent, Some(line))?;
+        ui::print_ok(&format!(
+            "Started {} ({}) on branch {}",
+            sess.id.short(),
+            sess.agent_profile,
+            sess.branch_name
+        ));
+        ui::print_info("Attaching to PTY (press Ctrl-] to return to Latch)...");
+        let sid = sess.id.to_string();
+        *active_session = Some(sess);
+        return crate::attach_interactive(&paths.socket_path, &sid);
     }
 
     let mut parts = line.splitn(2, char::is_whitespace);
     let cmd = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("").trim();
+
+    let resolve_target = |arg: &str, current: Option<&Session>| -> anyhow::Result<String> {
+        if !arg.is_empty() {
+            return Ok(arg.to_string());
+        }
+        current
+            .map(|s| s.id.to_string())
+            .ok_or_else(|| anyhow::anyhow!("no active session; pass <session-id> or run `/new`"))
+    };
 
     match cmd {
         "/exit" | "/quit" => {
@@ -151,7 +214,29 @@ fn handle_input(
         }
         "/clear" => {
             ui::clear_screen();
-            draw_banner(paths, active_agent, workspace, branch);
+            draw_banner(
+                active_agent,
+                workspace,
+                branch,
+                active_session.as_ref(),
+                installed_agents,
+            );
+            Ok(())
+        }
+        "/new" => {
+            let profile = if rest.is_empty() {
+                active_agent.as_str()
+            } else {
+                rest
+            };
+            let sess = open_session(paths, profile, None)?;
+            ui::print_ok(&format!(
+                "Opened session {} ({}) on branch {}",
+                sess.id.short(),
+                sess.agent_profile,
+                sess.branch_name
+            ));
+            *active_session = Some(sess);
             Ok(())
         }
         "/agent" | "/agents" => {
@@ -186,55 +271,59 @@ fn handle_input(
             let mut split = rest.splitn(2, char::is_whitespace);
             let first = split.next().unwrap_or("");
             let second = split.next().unwrap_or("").trim();
-            if agents.profiles.contains_key(first) && !second.is_empty() {
-                launch_and_attach(paths, first, second)
+            let (profile, task) = if agents.profiles.contains_key(first) && !second.is_empty() {
+                (first, second)
             } else {
-                launch_and_attach(paths, active_agent, rest)
-            }
+                (active_agent.as_str(), rest)
+            };
+            let sess = open_session(paths, profile, Some(task))?;
+            ui::print_ok(&format!(
+                "Started {} ({}) on branch {}",
+                sess.id.short(),
+                sess.agent_profile,
+                sess.branch_name
+            ));
+            ui::print_info("Attaching to PTY (press Ctrl-] to return to Latch)...");
+            let sid = sess.id.to_string();
+            *active_session = Some(sess);
+            crate::attach_interactive(&paths.socket_path, &sid)
         }
         "/sessions" | "/ls" => {
             let mut client = Client::connect(&paths.socket_path)?;
             let list: Vec<Session> = client.call("session.list", json!({}))?;
-            ui::print_sessions(&list);
+            let cur_id = active_session.as_ref().map(|s| s.id.as_str());
+            ui::print_sessions(&list, cur_id);
             Ok(())
         }
         "/attach" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /attach <session-id>");
-            }
-            ui::print_info(&format!("Attaching to {rest} (press Ctrl-] to detach)..."));
-            crate::attach_interactive(&paths.socket_path, rest)
+            let sid = resolve_target(rest, active_session.as_ref())?;
+            ui::print_info(&format!("Attaching to {sid} (press Ctrl-] to detach)..."));
+            crate::attach_interactive(&paths.socket_path, &sid)
         }
         "/screen" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /screen <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let res: Value = client.call("session.screen", json!({ "id": rest }))?;
+            let res: Value = client.call("session.screen", json!({ "id": sid }))?;
             println!("{}", res["screen"].as_str().unwrap_or(""));
             Ok(())
         }
         "/diff" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /diff <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let res: Value = client.call("session.diff", json!({ "id": rest }))?;
-            ui::print_colored_diff(res["patch"].as_str().unwrap_or(""));
+            let res: Value = client.call("session.diff", json!({ "id": sid }))?;
+            ui::print_mono_diff(res["patch"].as_str().unwrap_or(""));
             Ok(())
         }
         "/merge" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /merge <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let chk: Value = client.call("session.merge_check", json!({ "id": rest }))?;
+            let chk: Value = client.call("session.merge_check", json!({ "id": sid }))?;
             if !chk["clean"].as_bool().unwrap_or(false) {
                 ui::print_warn(&format!("Merge conflicts detected: {}", chk["conflicts"]));
                 return Ok(());
             }
             let res: Value =
-                client.call("session.merge", json!({ "id": rest, "strategy": "squash" }))?;
+                client.call("session.merge", json!({ "id": sid, "strategy": "squash" }))?;
             ui::print_ok(&format!(
                 "Merged cleanly (commit {})",
                 res["commit"].as_str().unwrap_or("")
@@ -242,38 +331,36 @@ fn handle_input(
             Ok(())
         }
         "/discard" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /discard <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let _: Value = client.call("session.discard", json!({ "id": rest }))?;
-            ui::print_ok(&format!("Discarded session {rest}"));
+            let _: Value = client.call("session.discard", json!({ "id": sid }))?;
+            ui::print_ok(&format!("Discarded session {sid}"));
+            if active_session
+                .as_ref()
+                .is_some_and(|s| s.id.as_str() == sid)
+            {
+                *active_session = None;
+            }
             Ok(())
         }
         "/pause" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /pause <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let s: Session = client.call("session.pause", json!({ "id": rest }))?;
+            let s: Session = client.call("session.pause", json!({ "id": sid }))?;
             ui::print_ok(&format!("{} -> {}", s.id.short(), s.status));
             Ok(())
         }
         "/resume" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /resume <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let s: Session = client.call("session.resume", json!({ "id": rest }))?;
+            let s: Session = client.call("session.resume", json!({ "id": sid }))?;
             ui::print_ok(&format!("{} -> {}", s.id.short(), s.status));
             Ok(())
         }
         "/kill" => {
-            if rest.is_empty() {
-                anyhow::bail!("usage: /kill <session-id>");
-            }
+            let sid = resolve_target(rest, active_session.as_ref())?;
             let mut client = Client::connect(&paths.socket_path)?;
-            let s: Session = client.call("session.kill", json!({ "id": rest }))?;
+            let s: Session = client.call("session.kill", json!({ "id": sid }))?;
             ui::print_ok(&format!("{} -> {}", s.id.short(), s.status));
             Ok(())
         }
@@ -292,25 +379,4 @@ fn handle_input(
         "/status" => crate::cmd_daemon_status(false),
         other => anyhow::bail!("unknown command '{other}'. Type `/help` for available commands."),
     }
-}
-
-fn launch_and_attach(paths: &Paths, profile: &str, task: &str) -> anyhow::Result<()> {
-    let mut client = Client::connect(&paths.socket_path)?;
-    let project_name = crate::resolve_or_register_cwd_project(&mut client)?;
-    let sess: Session = client.call(
-        "session.create",
-        json!({
-            "project": project_name,
-            "profile": profile,
-            "task": task,
-        }),
-    )?;
-    ui::print_ok(&format!(
-        "Started {} ({}) on branch {}",
-        sess.id.short(),
-        sess.agent_profile,
-        sess.branch_name
-    ));
-    ui::print_info("Attaching to PTY (press Ctrl-] to return to Latch prompt)...");
-    crate::attach_interactive(&paths.socket_path, sess.id.as_str())
 }
