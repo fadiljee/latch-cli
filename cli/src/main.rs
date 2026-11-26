@@ -295,9 +295,44 @@ fn spawn_daemon_background(quiet: bool) -> anyhow::Result<()> {
 
 pub(crate) fn ensure_daemon_running(paths: &Paths) -> anyhow::Result<()> {
     if paths.socket_path.exists() && UnixStream::connect(&paths.socket_path).is_ok() {
-        return Ok(());
+        // Jika binary daemon yang sedang berjalan berbeda/usang (mis. setelah upgrade), restart otomatis.
+        if is_daemon_binary_stale(&paths.socket_path) {
+            let _ = cmd_daemon_stop_quiet(paths);
+        } else {
+            return Ok(());
+        }
     }
     spawn_daemon_background(true)
+}
+
+fn is_daemon_binary_stale(socket_path: &Path) -> bool {
+    let Ok(mut client) = Client::connect(socket_path) else {
+        return false;
+    };
+    let Ok(status) = client.call::<Value>("daemon.status", json!({})) else {
+        return false;
+    };
+    let Some(pid) = status["pid"].as_u64() else {
+        return false;
+    };
+    let Ok(running_exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+        return false;
+    };
+    let Ok(current_exe) = std::env::current_exe() else {
+        return false;
+    };
+    running_exe != current_exe
+}
+
+fn cmd_daemon_stop_quiet(paths: &Paths) -> anyhow::Result<()> {
+    let mut client = Client::connect(&paths.socket_path)?;
+    let _: Value = client.call("daemon.shutdown", json!({}))?;
+    drop(client);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && paths.socket_path.exists() {
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 pub(crate) fn command_in_path(cmd: &str) -> bool {
@@ -367,7 +402,7 @@ pub(crate) fn cmd_login_interactive() -> anyhow::Result<()> {
     let oauth_providers: &[(&str, &str)] = &[
         (
             "antigravity",
-            "Antigravity CLI — Google account OAuth (`agy login`)",
+            "Antigravity CLI — Google account OAuth (`agy`)",
         ),
         (
             "claude",
@@ -445,7 +480,7 @@ pub(crate) fn cmd_login(agent: &str) -> anyhow::Result<()> {
     }
 
     let login_args: &[&str] = match agent {
-        "antigravity" | "claude" | "codex" | "amp" | "cursor" | "kiro" => &["login"],
+        "claude" | "codex" | "amp" | "cursor" | "kiro" => &["login"],
         "opencode" => &["auth", "login"],
         "cline" => &["auth"],
         "goose" => &["configure"],
