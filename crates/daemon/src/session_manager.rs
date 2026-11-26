@@ -1,4 +1,4 @@
-use latch_core::config::{GlobalConfig, Paths, load_agents};
+use latch_core::config::{GlobalConfig, Paths, load_effective_agents};
 use latch_core::model::{Project, Session, SessionStatus};
 use latch_core::protocol::{Event, err_code};
 use latch_core::{ProjectId, SandboxPolicy, SandboxProvider, SessionId, SpawnSpec, can_transition};
@@ -176,7 +176,7 @@ impl SessionManager {
         task: Option<String>,
         base_ref: Option<String>,
     ) -> Result<Session, ManagerError> {
-        let agents = load_agents(&self.paths.agents_file())
+        let agents = load_effective_agents(&self.paths.agents_file())
             .map_err(|e| ManagerError::rpc(err_code::PROFILE_INVALID, e.to_string()))?;
         let profile = agents.profiles.get(profile_name).cloned().ok_or_else(|| {
             ManagerError::rpc(
@@ -220,6 +220,9 @@ impl SessionManager {
 
         let mut env = build_clean_env(&profile.pass_env, &profile.env);
         env.push(("LATCH_SESSION_ID".to_string(), session_id.to_string()));
+        if let Some(ref t) = task {
+            env.push(("LATCH_TASK".to_string(), t.clone()));
+        }
 
         let mut spec = SpawnSpec {
             program: profile.command.clone(),
@@ -761,7 +764,17 @@ fn build_clean_env(
     profile_env: &std::collections::BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
     const BASE_KEYS: &[&str] = &[
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
     ];
     let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for key in BASE_KEYS {

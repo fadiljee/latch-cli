@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use latch_core::client::{AttachEvent, Client};
-use latch_core::config::{Paths, load_agents, load_global_config};
+use latch_core::config::{Paths, load_agents, load_effective_agents, load_global_config};
 use latch_core::model::{Project, Session, SessionStatus};
 use latch_daemon::{DaemonConfig, logging};
 use serde_json::{Value, json};
@@ -36,24 +36,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Kelola proses daemon Latch.
+    /// Manage the Latch daemon process.
     Daemon {
         #[command(subcommand)]
         action: DaemonCmd,
     },
-    /// Kelola proyek Git terdaftar.
+    /// List available AI coding agents and check which CLIs are installed.
+    Agents,
+    /// Sign in to an AI coding agent using your subscription account (OAuth).
+    Login {
+        /// Agent profile name (e.g. claude, codex, gemini, opencode, goose, qwen).
+        agent: String,
+    },
+    /// Create a starter ~/.config/latch/agents.toml file for custom profiles.
+    Init {
+        /// Overwrite existing agents.toml if present.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Manage registered Git projects.
     Project {
         #[command(subcommand)]
         action: ProjectCmd,
     },
-    /// Jalankan tugas agen baru pada proyek.
+    /// Launch an agent session in an isolated git worktree (auto-starts daemon).
     Run(RunArgs),
-    /// Kelola sesi agen.
+    /// Manage running and completed agent sessions.
     Session {
         #[command(subcommand)]
         action: SessionCmd,
     },
-    /// Validasi berkas konfigurasi dan profil agen.
+    /// Validate config.toml and agents.toml.
     Config {
         #[command(subcommand)]
         action: ConfigCmd,
@@ -88,14 +101,19 @@ enum ProjectCmd {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Agent profile name (e.g. claude, codex, gemini, opencode, aider, goose, qwen, shell).
     #[arg(long)]
     profile: String,
+    /// Optional task description (also exposed as LATCH_TASK).
     #[arg(long)]
-    task: String,
+    task: Option<String>,
+    /// Registered project name (defaults to current Git repository).
     #[arg(long)]
     project: Option<String>,
+    /// Base branch/ref for the new worktree.
     #[arg(long)]
     base: Option<String>,
+    /// Attach interactively to the PTY immediately after starting.
     #[arg(long)]
     attach: bool,
 }
@@ -184,12 +202,15 @@ fn main() -> anyhow::Result<()> {
                 if foreground {
                     run_daemon_foreground()
                 } else {
-                    spawn_daemon_background()
+                    spawn_daemon_background(false)
                 }
             }
             DaemonCmd::Stop => cmd_daemon_stop(cli.json),
             DaemonCmd::Status => cmd_daemon_status(cli.json),
         },
+        Commands::Agents => cmd_agents(cli.json),
+        Commands::Login { agent } => cmd_login(&agent),
+        Commands::Init { force } => cmd_init(force),
         Commands::Project { action } => cmd_project(action, cli.json),
         Commands::Run(args) => cmd_run(args, cli.json),
         Commands::Session { action } => cmd_session(action, cli.json),
@@ -229,10 +250,12 @@ fn run_daemon_foreground() -> anyhow::Result<()> {
     })
 }
 
-fn spawn_daemon_background() -> anyhow::Result<()> {
+fn spawn_daemon_background(quiet: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     if paths.socket_path.exists() && UnixStream::connect(&paths.socket_path).is_ok() {
-        println!("daemon already running at {}", paths.socket_path.display());
+        if !quiet {
+            println!("daemon already running at {}", paths.socket_path.display());
+        }
         return Ok(());
     }
 
@@ -248,7 +271,9 @@ fn spawn_daemon_background() -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         if paths.socket_path.exists() && UnixStream::connect(&paths.socket_path).is_ok() {
-            println!("daemon started at {}", paths.socket_path.display());
+            if !quiet {
+                println!("daemon started at {}", paths.socket_path.display());
+            }
             return Ok(());
         }
         thread::sleep(Duration::from_millis(50));
@@ -257,6 +282,152 @@ fn spawn_daemon_background() -> anyhow::Result<()> {
         "timed out waiting for daemon socket at {}",
         paths.socket_path.display()
     )
+}
+
+fn ensure_daemon_running(paths: &Paths) -> anyhow::Result<()> {
+    if paths.socket_path.exists() && UnixStream::connect(&paths.socket_path).is_ok() {
+        return Ok(());
+    }
+    spawn_daemon_background(true)
+}
+
+fn command_in_path(cmd: &str) -> bool {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(cmd);
+        if candidate.is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+fn cmd_agents(json_out: bool) -> anyhow::Result<()> {
+    let paths = Paths::resolve()?;
+    let agents = load_effective_agents(&paths.agents_file())?;
+    let rows: Vec<Value> = agents
+        .profiles
+        .iter()
+        .map(|(name, prof)| {
+            let installed = command_in_path(&prof.command);
+            let env_hint = if prof.pass_env.is_empty() {
+                "none".to_string()
+            } else {
+                prof.pass_env.join(", ")
+            };
+            json!({
+                "name": name,
+                "command": prof.command,
+                "installed": installed,
+                "api_key_env": env_hint,
+            })
+        })
+        .collect();
+
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else {
+        println!(
+            "{:<14} {:<12} {:<12} API KEY (OPTIONAL)",
+            "PROFILE", "COMMAND", "STATUS"
+        );
+        for row in rows {
+            let status = if row["installed"].as_bool().unwrap_or(false) {
+                "installed"
+            } else {
+                "not found"
+            };
+            println!(
+                "{:<14} {:<12} {:<12} {}",
+                row["name"].as_str().unwrap_or(""),
+                row["command"].as_str().unwrap_or(""),
+                status,
+                row["api_key_env"].as_str().unwrap_or("")
+            );
+        }
+        println!(
+            "\nTip: sign in with your account first using `latch-cli login <profile>`, or export an optional API key."
+        );
+    }
+    Ok(())
+}
+
+fn cmd_login(agent: &str) -> anyhow::Result<()> {
+    let paths = Paths::resolve()?;
+    let agents = load_effective_agents(&paths.agents_file())?;
+    let profile = agents.profiles.get(agent).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown agent profile '{agent}'. Run `latch-cli agents` to see available profiles."
+        )
+    })?;
+
+    if !command_in_path(&profile.command) {
+        anyhow::bail!(
+            "'{}' is not installed on PATH. Install the {} CLI first, then re-run `latch-cli login {}`.",
+            profile.command,
+            agent,
+            agent
+        );
+    }
+
+    let login_args: &[&str] = match agent {
+        "claude" => &["login"],
+        "codex" => &["login"],
+        "opencode" => &["auth", "login"],
+        "goose" => &["configure"],
+        _ => &[],
+    };
+
+    println!(
+        "Launching {} account login ({}{})...",
+        agent,
+        profile.command,
+        if login_args.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", login_args.join(" "))
+        }
+    );
+
+    let status = Command::new(&profile.command)
+        .args(login_args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("login command exited with status {status}");
+    }
+    Ok(())
+}
+
+fn cmd_init(force: bool) -> anyhow::Result<()> {
+    let paths = Paths::resolve()?;
+    std::fs::create_dir_all(&paths.config_dir)?;
+    let target = paths.agents_file();
+    if target.exists() && !force {
+        println!(
+            "{} already exists (use --force to overwrite)",
+            target.display()
+        );
+        return Ok(());
+    }
+
+    let template = r#"# Custom Latch agent profiles (optional).
+# Built-in profiles (claude, codex, gemini, opencode, aider, goose, qwen, shell)
+# already work out of the box with both account login and optional API keys.
+#
+# Example custom profile override:
+# [profiles.my-agent]
+# command = "claude"
+# args = ["--model", "sonnet"]
+# proxy_mode = "bypass"
+# pass_env = ["ANTHROPIC_API_KEY"]
+"#;
+    std::fs::write(&target, template)?;
+    println!("created {}", target.display());
+    Ok(())
 }
 
 fn cmd_daemon_stop(json_out: bool) -> anyhow::Result<()> {
@@ -298,6 +469,7 @@ fn cmd_daemon_status(json_out: bool) -> anyhow::Result<()> {
 
 fn cmd_project(action: ProjectCmd, json_out: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
+    ensure_daemon_running(&paths)?;
     let mut client = Client::connect(&paths.socket_path)?;
 
     match action {
@@ -351,6 +523,7 @@ fn cmd_project(action: ProjectCmd, json_out: bool) -> anyhow::Result<()> {
 
 fn cmd_run(args: RunArgs, json_out: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
+    ensure_daemon_running(&paths)?;
     let mut client = Client::connect(&paths.socket_path)?;
 
     let project_name = match args.project {
@@ -419,6 +592,7 @@ fn resolve_or_register_cwd_project(client: &mut Client) -> anyhow::Result<String
 
 fn cmd_session(action: SessionCmd, json_out: bool) -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
+    ensure_daemon_running(&paths)?;
     if let SessionCmd::Attach { id } = action {
         return attach_interactive(&paths.socket_path, &id);
     }

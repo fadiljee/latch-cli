@@ -231,6 +231,98 @@ pub fn load_agents(path: &Path) -> Result<AgentsFile, ConfigError> {
     Ok(agents)
 }
 
+/// Memuat `agents.toml` yang digabung dengan profil bawaan untuk semua agen populer.
+/// Profil yang didefinisikan pengguna di `agents.toml` akan menimpa profil bawaan dengan nama sama.
+pub fn load_effective_agents(path: &Path) -> Result<AgentsFile, ConfigError> {
+    let mut profiles = builtin_profiles();
+    let user = load_agents(path)?;
+    for (name, profile) in user.profiles {
+        profiles.insert(name, profile);
+    }
+    Ok(AgentsFile { profiles })
+}
+
+/// Daftar profil agen bawaan agar `latch-cli` langsung siap pakai tanpa konfigurasi manual.
+/// Semua profil mendukung login akun (OAuth/sesi CLI) maupun API key lewat `pass_env`.
+#[must_use]
+pub fn builtin_profiles() -> BTreeMap<String, AgentProfile> {
+    let mut m = BTreeMap::new();
+
+    let mut add = |name: &str, cmd: &str, args: &[&str], pass_env: &[&str], extra_rw: &[&str]| {
+        m.insert(
+            name.to_string(),
+            AgentProfile {
+                command: cmd.to_string(),
+                args: args.iter().map(|s| (*s).to_string()).collect(),
+                env: BTreeMap::new(),
+                pass_env: pass_env.iter().map(|s| (*s).to_string()).collect(),
+                proxy_mode: ProxyMode::Bypass,
+                proxy_provider: None,
+                resume_args: Vec::new(),
+                extra_rw: extra_rw.iter().map(|s| (*s).to_string()).collect(),
+                extra_ro: Vec::new(),
+            },
+        );
+    };
+
+    add(
+        "claude",
+        "claude",
+        &[],
+        &["ANTHROPIC_API_KEY"],
+        &["~/.claude", "~/.claude.json"],
+    );
+    add("codex", "codex", &[], &["OPENAI_API_KEY"], &["~/.codex"]);
+    add(
+        "gemini",
+        "gemini",
+        &[],
+        &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        &["~/.gemini"],
+    );
+    add(
+        "opencode",
+        "opencode",
+        &[],
+        &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+        ],
+        &["~/.config/opencode", "~/.local/share/opencode"],
+    );
+    add(
+        "aider",
+        "aider",
+        &[],
+        &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+        ],
+        &["~/.aider"],
+    );
+    add(
+        "goose",
+        "goose",
+        &["session"],
+        &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"],
+        &["~/.config/goose"],
+    );
+    add(
+        "qwen",
+        "qwen",
+        &[],
+        &["OPENAI_API_KEY", "DASHSCOPE_API_KEY"],
+        &["~/.qwen"],
+    );
+    add("shell", "sh", &[], &[], &[]);
+
+    m
+}
+
 /// Memeriksa apakah nama proyek atau profil hanya mengandung `[A-Za-z0-9._-]+`.
 #[must_use]
 pub fn is_valid_identifier(name: &str) -> bool {
