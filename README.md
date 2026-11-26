@@ -62,7 +62,16 @@ Running multiple AI coding agent CLIs (`claude`, `codex`, `gemini`, `opencode`, 
 
 ## Quick Start
 
-### 1. Install or run via `npx`
+### 1. Install
+
+**Option A — `curl | sh` (recommended, zero Node.js required):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fadiljee/latch-cli/main/install.sh | sh
+latch-cli
+```
+
+**Option B — `npx` / `npm`:**
 
 ```bash
 # Run directly from GitHub
