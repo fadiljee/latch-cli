@@ -1,6 +1,8 @@
 # Build & dependency artifacts
 /target
 **/*.rs.bk
+/node_modules
+bin/native/
 web/node_modules
 web/dist
 

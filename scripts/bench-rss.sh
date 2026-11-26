@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-cargo build --release -p latch
-BIN="$ROOT_DIR/target/release/latch"
+cargo build --release -p latch-cli
+BIN="$ROOT_DIR/target/release/latch-cli"
 
 TMP_ROOT="$(mktemp -d)"
 DAEMON_PID=""

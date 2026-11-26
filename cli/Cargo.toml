@@ -1,12 +1,12 @@
 [package]
-name = "latch"
+name = "latch-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "latch"
+name = "latch-cli"
 path = "src/main.rs"
 
 [lints]
@@ -15,7 +15,6 @@ workspace = true
 [dependencies]
 latch-core.workspace = true
 latch-daemon.workspace = true
-latch-tui.workspace = true
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true

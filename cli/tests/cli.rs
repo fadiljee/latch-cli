@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 #[test]
 fn cli_help_and_config_check_invalid_exit_code() {
-    let bin = env!("CARGO_BIN_EXE_latch");
+    let bin = env!("CARGO_BIN_EXE_latch-cli");
 
     let help = Command::new(bin).arg("--help").output().unwrap();
     assert!(help.status.success());

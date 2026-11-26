@@ -20,7 +20,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
-#[command(name = "latch", version, about = "Autonomous Rust Agent Runtime")]
+#[command(
+    name = "latch-cli",
+    version,
+    about = "Autonomous Rust Agent Runtime CLI"
+)]
 struct Cli {
     /// Output hasil sebagai JSON.
     #[arg(long, global = true)]
@@ -54,8 +58,6 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigCmd,
     },
-    /// Buka antarmuka terminal interaktif (TUI).
-    Tui,
 }
 
 #[derive(Subcommand)]
@@ -194,11 +196,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Config { action } => match action {
             ConfigCmd::Check => cmd_config_check(cli.json),
         },
-        Commands::Tui => {
-            let paths = Paths::resolve()?;
-            latch_tui::run(&paths.socket_path)?;
-            Ok(())
-        }
     }
 }
 

@@ -21,6 +21,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo nextest run --workspace
+      - run: node --check bin/latch-cli.js && node --check scripts/npm-install.js && npm pack --dry-run
 
   musl:
     runs-on: ubuntu-latest
@@ -31,8 +32,8 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target x86_64-unknown-linux-musl -p latch
-      - run: ./scripts/check-static.sh target/x86_64-unknown-linux-musl/release/latch
+      - run: cargo build --release --target x86_64-unknown-linux-musl -p latch-cli
+      - run: ./scripts/check-static.sh target/x86_64-unknown-linux-musl/release/latch-cli
 
   bench:
     runs-on: ubuntu-latest

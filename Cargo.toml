@@ -29,7 +29,6 @@ latch-sandbox = { path = "crates/sandbox" }
 latch-proxy = { path = "crates/proxy" }
 latch-dag = { path = "crates/dag" }
 latch-daemon = { path = "crates/daemon" }
-latch-tui = { path = "crates/tui" }
 
 tokio = { version = "1.47", default-features = false, features = [
     "rt-multi-thread",
@@ -56,9 +55,7 @@ tracing-appender = "0.2"
 portable-pty = "0.9"
 vt100 = "0.16.2"
 nix = { version = "0.30", default-features = false, features = ["signal", "process", "user", "fs"] }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
-tui-term = "0.3.4"
 regex = { version = "1.11", default-features = false, features = ["std", "perf"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 

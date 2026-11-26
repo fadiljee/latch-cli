@@ -1,0 +1,33 @@
+{
+  "name": "latch-runtime",
+  "version": "0.1.0",
+  "description": "Autonomous Rust Agent Runtime CLI — parallel AI coding agents in isolated git worktrees",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fadiljee/latch-runtime.git"
+  },
+  "bin": {
+    "latch-cli": "bin/latch-cli.js",
+    "latch-runtime": "bin/latch-cli.js"
+  },
+  "files": [
+    "bin/latch-cli.js",
+    "scripts/npm-install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/npm-install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "rust",
+    "cli",
+    "git-worktree",
+    "orchestrator"
+  ],
+  "license": "UNLICENSED"
+}
